@@ -10,7 +10,7 @@
 namespace fs = std::filesystem;
 
 struct Args {
-    std::string model_dir = "../assets/nllb_600m";
+    std::string model_dir = "./assets/nllb_600m";
     std::string source_lang = "eng_Latn";
     std::string target_lang = "zho_Hans";
     std::string text = "ncnn is the best edge-side neural network inference framework";
@@ -21,7 +21,7 @@ void print_usage(const char* prog) {
     std::cout << "Usage: " << prog << " [--model-dir DIR] [--vocab FILE] [--merges FILE]\n"
               << "                 [--src TOKEN] [--tgt TOKEN] [--text TEXT] [--vulkan]\n\n"
               << "Defaults:\n"
-              << "  --model-dir    ../assets/nllb_600m\n"
+              << "  --model-dir    ./assets/nllb_600m\n"
               << "  --src          eng_Latn\n"
               << "  --tgt          zho_Hans\n"
               << "  --text         \"ncnn is the best edge-side neural network inference framework\"\n"

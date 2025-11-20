@@ -37,6 +37,8 @@ function add_example(repo)
         add_files("examples/" .. repo .. ".cpp")
         add_deps("ncnn_llm")
         add_packages("ncnn", "opencv-mobile")
+
+        set_rundir("$(projectdir)/")
 end
 
 add_example("nllb_main")

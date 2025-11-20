@@ -41,7 +41,7 @@ Future plans include but are not limited to:
 欢迎大家关注和参与本项目，共同推动ncnn在大语言模型领域的发展！
 
 TODO LIST:
-- [ ] PaddleOCR VL
+- [ ] MiniCPM4-0.5B
 - [ ] QWen3 0.6B
 - [ ] INT8 量化
 
@@ -49,3 +49,18 @@ TODO LIST:
 
 模型可以从以下链接获取：
 [nllb-600M](https://www.modelscope.cn/models/futz12/ncnn_llm_nllb_600m)
+
+## 编译和使用
+
+```
+git clone https://github.com/futz12/ncnn_llm.git
+cd ncnn_llm
+xmake build
+xmake run nllb_main
+```
+
+然后下载模型
+下载完成后 指定路径 即可运行
+
+nllb_main --model-dir ../../assets/ncnn_llm_nllb_600m/
+
