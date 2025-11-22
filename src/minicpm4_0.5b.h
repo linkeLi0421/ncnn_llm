@@ -28,8 +28,6 @@ public:
     bool decode(std::shared_ptr<minicpm4_0_5b_ctx> ctx,
                 std::function<void(const std::string&)> callback);
 
-    std::string decode(std::shared_ptr<minicpm4_0_5b_ctx> ctx);
-
 private:
     class Impl;
     std::unique_ptr<Impl> impl_;

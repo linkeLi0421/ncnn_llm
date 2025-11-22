@@ -165,7 +165,6 @@ std::shared_ptr<minicpm4_0_5b_ctx> minicpm4_0_5b::prefill(const std::string& inp
             ex.extract(name_k_out, k_cache);
             ex.extract(name_v_out, v_cache);
 
-            printf("%f %f\n", k_cache[0], v_cache[0]);
             kv_cache.emplace_back(std::move(k_cache), std::move(v_cache));
         }
     }
@@ -242,7 +241,120 @@ std::shared_ptr<minicpm4_0_5b_ctx> minicpm4_0_5b::prefill(const std::string& inp
 
 std::shared_ptr<minicpm4_0_5b_ctx> minicpm4_0_5b::prefill(const std::string& input_text,
                                                  const std::shared_ptr<minicpm4_0_5b_ctx> ctx) {
-    return nullptr;
+    auto token_ids = impl_->bpe.encode(input_text, true, false);
+    int last_token_id = token_ids.back();
+    token_ids.pop_back();
+
+    ncnn::Mat cos_cache;
+    ncnn::Mat sin_cache;
+    generate_rope_embed_cache(token_ids.size(), 128, 0, cos_cache, sin_cache);
+    ncnn::Mat input_ids_mat = ncnn::Mat((int)token_ids.size(), 1, (void*)token_ids.data()).clone();
+    ncnn::Mat token_embed;
+    {
+        ncnn::Extractor ex = impl_->embed_net.create_extractor();
+        ex.input("in0", input_ids_mat);
+        ex.extract("out0", token_embed);
+    }
+
+    ncnn::Mat mask((int)token_ids.size() + ctx->kv_cache[0].first.h, (int)token_ids.size());
+    mask.fill(0.0f);
+    for (int i = 0; i < (int)token_ids.size(); i++)
+    {
+        float* row = mask.row(i);
+        for (int j = ctx->kv_cache[0].first.h + i + 1; j < (int)token_ids.size(); j++) {
+            row[j] = -10000.0f;
+        }
+    }
+    ncnn::Mat decode_out;
+    {
+        ncnn::Extractor ex = impl_->decoder_net.create_extractor();
+        ex.input("in0", token_embed);
+        ex.input("in1", mask);
+        ex.input("in2", cos_cache);
+        ex.input("in3", sin_cache);
+
+        for (int i = 0; i < attn_cnt; i++) {
+            char name_k_out[32], name_v_out[32];
+            std::snprintf(name_k_out, sizeof(name_k_out), "cache_k%d", i);
+            std::snprintf(name_v_out, sizeof(name_v_out), "cache_v%d", i);
+            ex.input(name_k_out, ctx->kv_cache[i].first);
+            ex.input(name_v_out, ctx->kv_cache[i].second);
+        }
+
+        for (int i = 0; i < attn_cnt; i++) {
+            char name_k_out[32], name_v_out[32];
+            std::snprintf(name_k_out, sizeof(name_k_out), "out_cache_k%d", i);
+            std::snprintf(name_v_out, sizeof(name_v_out), "out_cache_v%d", i);
+            ncnn::Mat k_cache, v_cache;
+            ex.extract(name_k_out, k_cache);
+            ex.extract(name_v_out, v_cache);
+            ctx->kv_cache[i] = std::make_pair(std::move(k_cache), std::move(v_cache));
+        }
+    }
+
+    // full process last token
+    ncnn::Mat last_token_mat = ncnn::Mat(1, 1, (void*)&last_token_id).clone();
+    ncnn::Mat last_token_embed;
+    {
+        ncnn::Extractor ex = impl_->embed_net.create_extractor();
+        ex.input("in0", last_token_mat);
+        ex.extract("out0", last_token_embed);
+    }
+    ncnn::Mat last_cos_cache;
+    ncnn::Mat last_sin_cache;
+
+    generate_rope_embed_cache(1, 128, (int)token_ids.size(), last_cos_cache, last_sin_cache);
+    ncnn::Mat last_mask((int)token_ids.size() + ctx->kv_cache[0].first.h + 1, 1);
+    last_mask.fill(0.0f);
+
+    {
+        ncnn::Extractor ex = impl_->decoder_net.create_extractor();
+        ex.input("in0", last_token_embed);
+        ex.input("in1", last_mask);
+        ex.input("in2", last_cos_cache);
+        ex.input("in3", last_sin_cache);
+
+        for (int i = 0; i < attn_cnt; i++) {
+            char name_k_in[16], name_v_in[16];
+            std::snprintf(name_k_in, sizeof(name_k_in), "cache_k%d", i);
+            std::snprintf(name_v_in, sizeof(name_v_in), "cache_v%d", i);
+            ex.input(name_k_in, ctx->kv_cache[i].first);
+            ex.input(name_v_in, ctx->kv_cache[i].second);
+        }
+
+        for (int i = 0; i < attn_cnt; i++) {
+            char name_k_out[32], name_v_out[32];
+            std::snprintf(name_k_out, sizeof(name_k_out), "out_cache_k%d", i);
+            std::snprintf(name_v_out, sizeof(name_v_out), "out_cache_v%d", i);
+            ncnn::Mat k_cache, v_cache;
+            ex.extract(name_k_out, k_cache);
+            ex.extract(name_v_out, v_cache);
+            ctx->kv_cache[i] = std::make_pair(std::move(k_cache), std::move(v_cache));
+        }
+        ex.extract("out0", decode_out);
+    }
+
+    ncnn::Mat logits;
+    {
+        ncnn::Extractor ex = impl_->proj_out_net.create_extractor();
+        ex.input("in0", decode_out);
+        ex.extract("out0", logits);
+    }
+    int next_token_id = 0;
+    {
+        const float* p = logits;
+        int max_idx = 0;
+        float max_val = p[0];
+        for (int i = 1; i < logits.w; ++i) {
+            if (p[i] > max_val) {
+                max_val = p[i];
+                max_idx = i;
+            }
+        }
+        next_token_id = max_idx;
+    }
+    ctx->cur_token = next_token_id;
+    return ctx;
 }
 
 bool minicpm4_0_5b::decode(std::shared_ptr<minicpm4_0_5b_ctx> ctx,
@@ -318,8 +430,3 @@ bool minicpm4_0_5b::decode(std::shared_ptr<minicpm4_0_5b_ctx> ctx,
 
     return true;
 }
-
-std::string minicpm4_0_5b::decode(std::shared_ptr<minicpm4_0_5b_ctx> ctx) {
-    return {};
-}
-
