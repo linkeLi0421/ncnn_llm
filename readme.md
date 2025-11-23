@@ -41,14 +41,15 @@ Future plans include but are not limited to:
 欢迎大家关注和参与本项目，共同推动ncnn在大语言模型领域的发展！
 
 TODO LIST:
-- [ ] MiniCPM4-0.5B
+- [x] MiniCPM4-0.5B
 - [ ] QWen3 0.6B
 - [ ] INT8 量化
+- [ ] 完善的推理过程
 
 ## 模型获取方法
 
 模型可以从以下链接获取：
-[nllb-600M](https://www.modelscope.cn/models/futz12/ncnn_llm_nllb_600m)
+[ncnn modelzoo](https://mirrors.sdu.edu.cn/ncnn_modelzoo/)
 
 ## 编译和使用
 
