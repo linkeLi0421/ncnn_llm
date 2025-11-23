@@ -58,40 +58,108 @@ public:
     }
 };
 
-// ref transformers/modeling_rope_utils.py _compute_default_rope_parameters()
-// ref transformers/models/llama/modeling_llama.py class LlamaRotaryEmbedding
-static void generate_rope_embed_cache(int seqlen, int embed_dim, int position_id, ncnn::Mat& cos_cache, ncnn::Mat& sin_cache)
-{
-    // rope related hyper-parameters from config.json
-    const float rope_theta = 100000;
-    const float attention_factor = 1.f;
+// MiniCPM LongRoPE 超参数常量
+static const int ORIGINAL_MAX_POSITION_EMBEDDINGS = 32768;
+static const float ROPE_BASE = 10000.0f;
 
-    // prepare inv_freq
-    std::vector<float> inv_freq(embed_dim / 2);
-    for (int i = 0; i < embed_dim / 2; i++)
-    {
-        inv_freq[i] = 1.f / powf(rope_theta, (float)(i * 2) / embed_dim);
+// 来自配置的 short_factor 与 long_factor（长度应为 head_dim/2，MiniCPM4-0.5B head_dim=64 => 32）
+static const float SHORT_FACTOR[32] = {
+    1.00043606758f, 1.06684434414f, 1.16314256191f, 1.30257427692f,
+    1.50402057171f, 1.79415059090f, 2.21012210846f, 2.80266666412f,
+    3.63899707794f, 4.80419254303f, 6.39855432510f, 8.52714824677f,
+    11.27754211426f, 14.68499851227f, 18.69317054749f, 23.13019371033f,
+    27.72362518311f, 32.16065597534f, 36.16882705688f, 39.57627868652f,
+    42.32667541504f, 44.45526885986f, 46.04962921143f, 47.21482849121f,
+    48.05115509033f, 48.64370346069f, 49.05967712402f, 49.34980392456f,
+    49.55124664307f, 49.69068145752f, 49.78697967529f, 49.85338592529f
+};
+
+static const float LONG_FACTOR[32] = {
+    1.00043606758f, 1.06684434414f, 1.16314256191f, 1.30257427692f,
+    1.50402057171f, 1.79415059090f, 2.21012210846f, 2.80266666412f,
+    3.63899707794f, 4.80419254303f, 6.39855432510f, 8.52714824677f,
+    11.27754211426f, 14.68499851227f, 18.69317054749f, 23.13019371033f,
+    27.72362518311f, 32.16065597534f, 36.16882705688f, 39.57627868652f,
+    42.32667541504f, 44.45526885986f, 46.04962921143f, 47.21482849121f,
+    48.05115509033f, 48.64370346069f, 49.05967712402f, 49.34980392456f,
+    49.55124664307f, 49.69068145752f, 49.78697967529f, 49.85338592529f
+};
+
+// 可选：如果 max_position_embeddings 与 original 不同，需要动态计算 scaling_factor
+// 当前配置中二者相等 => scaling_factor = 1
+static inline float compute_scaling_factor(int max_position_embeddings) {
+    float scale = static_cast<float>(max_position_embeddings) / static_cast<float>(ORIGINAL_MAX_POSITION_EMBEDDINGS);
+    // 当 scale == 1 时，log(scale)=0 => scaling_factor=1
+    return std::sqrt(1.0f + std::log(scale) / std::log(static_cast<float>(ORIGINAL_MAX_POSITION_EMBEDDINGS)));
+}
+
+/**
+ * 生成 RoPE 的 cos / sin 缓存（仅前半部分）。
+ *
+ * @param seqlen      要生成的序列长度（位置数）
+ * @param embed_dim   单头维度（head_dim），需为偶数
+ * @param position_id 起始位置偏移（用于增量生成 KV cache 时的偏移）
+ * @param cos_cache   输出：形状 [seqlen, embed_dim/2] 的余弦缓存（ncnn: w=embed_dim/2, h=seqlen）
+ * @param sin_cache   输出：形状 [seqlen, embed_dim/2] 的正弦缓存
+ */
+static void generate_rope_embed_cache(int seqlen,
+                                      int embed_dim,
+                                      int position_id,
+                                      ncnn::Mat& cos_cache,
+                                      ncnn::Mat& sin_cache)
+{
+    // 安全检查
+    if (embed_dim % 2 != 0 || seqlen <= 0) {
+        // 简单处理，可根据需要改为抛异常或返回错误码
+        cos_cache.release();
+        sin_cache.release();
+        return;
     }
 
-    cos_cache.create(embed_dim / 2, seqlen);
-    sin_cache.create(embed_dim / 2, seqlen);
+    const int half_dim = embed_dim / 2;
 
-    for (int i = 0; i < seqlen; i++)
-    {
-        float* cos_ptr = cos_cache.row(i);
-        float* sin_ptr = sin_cache.row(i);
+    // 分配 ncnn::Mat (w=half_dim, h=seqlen, c=1)
+    cos_cache.create(half_dim, seqlen);
+    sin_cache.create(half_dim, seqlen);
 
-        for (int j = 0; j < embed_dim / 2; j++)
-        {
-            const int pos = position_id + i;
-            const float t = pos * inv_freq[j];
-            const float cos_val = cosf(t);
-            const float sin_val = sinf(t);
-            *cos_ptr++ = cos_val;
-            *sin_ptr++ = sin_val;
+    if (cos_cache.empty() || sin_cache.empty()) {
+        return;
+    }
+
+    float* cos_ptr = cos_cache.channel(0);
+    float* sin_ptr = sin_cache.channel(0);
+
+    // 计算 inv_freq: 公式与 Python 中 torch.arange(0, dim, 2)/dim 对应
+    // idx_j = 2*j => exponent = (2*j)/embed_dim
+    std::vector<float> inv_freq(half_dim);
+    for (int j = 0; j < half_dim; ++j) {
+        float exponent = (2.0f * j) / static_cast<float>(embed_dim);
+        inv_freq[j] = 1.0f / std::pow(ROPE_BASE, exponent);
+    }
+
+    // 根据 seqlen 是否超过 original_max_position_embeddings 选择 factor
+    const float* ext_factor = (seqlen > ORIGINAL_MAX_POSITION_EMBEDDINGS) ? LONG_FACTOR : SHORT_FACTOR;
+
+    // 当前配置中 max_position_embeddings == ORIGINAL => scaling_factor = 1
+    // 如果你的实际使用中不同，可把 max_position_embeddings 作为参数传入并计算
+    const float scaling_factor = compute_scaling_factor(ORIGINAL_MAX_POSITION_EMBEDDINGS);
+
+    // 主循环：生成 cos / sin（仅半维度）
+    // freqs[i, j] = ( (t_i) * inv_freq[j] ) / ext_factor[j]
+    // t_i = position_id + i
+    for (int i = 0; i < seqlen; ++i) {
+        int t = position_id + i;
+        float* row_cos = cos_ptr + i * half_dim;
+        float* row_sin = sin_ptr + i * half_dim;
+
+        for (int j = 0; j < half_dim; ++j) {
+            float freq = (static_cast<float>(t) * inv_freq[j]) / ext_factor[j];
+            row_cos[j] = std::cos(freq) * scaling_factor;
+            row_sin[j] = std::sin(freq) * scaling_factor;
         }
     }
 }
+
 
 minicpm4_0_5b::minicpm4_0_5b(std::string embed_param,
                                  std::string embed_bin,
@@ -247,7 +315,7 @@ std::shared_ptr<minicpm4_0_5b_ctx> minicpm4_0_5b::prefill(const std::string& inp
 
     ncnn::Mat cos_cache;
     ncnn::Mat sin_cache;
-    generate_rope_embed_cache(token_ids.size(), 128, 0, cos_cache, sin_cache);
+    generate_rope_embed_cache(token_ids.size(), 64, 0, cos_cache, sin_cache);
     ncnn::Mat input_ids_mat = ncnn::Mat((int)token_ids.size(), 1, (void*)token_ids.data()).clone();
     ncnn::Mat token_embed;
     {
@@ -261,7 +329,7 @@ std::shared_ptr<minicpm4_0_5b_ctx> minicpm4_0_5b::prefill(const std::string& inp
     for (int i = 0; i < (int)token_ids.size(); i++)
     {
         float* row = mask.row(i);
-        for (int j = ctx->kv_cache[0].first.h + i + 1; j < (int)token_ids.size(); j++) {
+        for (int j = ctx->kv_cache[0].first.h + i + 1; j < (int)token_ids.size() + ctx->kv_cache[0].first.h; j++) {
             row[j] = -10000.0f;
         }
     }
@@ -303,8 +371,8 @@ std::shared_ptr<minicpm4_0_5b_ctx> minicpm4_0_5b::prefill(const std::string& inp
     ncnn::Mat last_cos_cache;
     ncnn::Mat last_sin_cache;
 
-    generate_rope_embed_cache(1, 128, (int)token_ids.size(), last_cos_cache, last_sin_cache);
-    ncnn::Mat last_mask((int)token_ids.size() + ctx->kv_cache[0].first.h + 1, 1);
+    generate_rope_embed_cache(1, 64, (int)token_ids.size(), last_cos_cache, last_sin_cache);
+    ncnn::Mat last_mask(ctx->kv_cache[0].first.h + 1, 1);
     last_mask.fill(0.0f);
 
     {
@@ -372,7 +440,7 @@ bool minicpm4_0_5b::decode(std::shared_ptr<minicpm4_0_5b_ctx> ctx,
         }
         ncnn::Mat cos_cache;
         ncnn::Mat sin_cache;
-        generate_rope_embed_cache(1, 128, ctx->kv_cache[0].first.h, cos_cache, sin_cache);
+        generate_rope_embed_cache(1, 64, ctx->kv_cache[0].first.h, cos_cache, sin_cache);
         ncnn::Mat mask(ctx->kv_cache[0].first.h + 1, 1);
         mask.fill(0.0f);
 
