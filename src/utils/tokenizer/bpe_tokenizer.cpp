@@ -15,51 +15,51 @@ static std::string Trim(const std::string& s) {
 }
 
 std::vector<std::string> BpeTokenizer::LoadVocab(const std::string& vocab_path) {
-    std::ifstream fin(vocab_path);
-    if (!fin) throw std::runtime_error("Failed to open vocab file: " + vocab_path);
-    std::vector<std::string> v;
-    v.reserve(50000);
-    std::string line;
-    while (std::getline(fin, line)) {
-        std::string tok = Trim(line);
-        if (tok.empty()) continue;
-        v.push_back(tok);
+    std::ifstream ifs(vocab_path);
+    if (!ifs.is_open()) {
+        throw std::runtime_error("Failed to open vocab file: " + vocab_path);
     }
-    return v;
+    std::vector<std::string> vocab;
+    vocab.reserve(50000);
+    std::string line;
+    while (std::getline(ifs, line)) {
+        line = Trim(line);
+        if (!line.empty()) vocab.push_back(line);
+    }
+    return vocab;
 }
 
 std::unordered_map<std::string, int> BpeTokenizer::BuildTokenToId(const std::vector<std::string>& id_to_token) {
     std::unordered_map<std::string, int> m;
     m.reserve(id_to_token.size() * 2);
-    for (int i = 0; i < static_cast<int>(id_to_token.size()); ++i) {
-        m.emplace(id_to_token[i], i);
+    for (size_t i = 0; i < id_to_token.size(); ++i) {
+        m.emplace(id_to_token[i], static_cast<int>(i));
     }
     return m;
 }
 
 std::unordered_map<std::string, int> BpeTokenizer::LoadMergesRank(const std::string& merges_path) {
-    std::ifstream fin(merges_path);
-    if (!fin) throw std::runtime_error("Failed to open merges file: " + merges_path);
-    std::unordered_map<std::string, int> rank;
-    rank.reserve(100000);
-    std::string line;
-    while (std::getline(fin, line)) {
-        std::string s = Trim(line);
-        if (s.empty()) continue;
-        std::string a, b;
-        {
-            std::istringstream iss(s);
-            if (!(iss >> a >> b)) continue;
-        }
-        std::string key = PairKey(a, b);
-        if (rank.find(key) == rank.end()) {
-            rank.emplace(std::move(key), static_cast<int>(rank.size()));
-        }
+    std::ifstream ifs(merges_path);
+    if (!ifs.is_open()) {
+        throw std::runtime_error("Failed to open merges file: " + merges_path);
     }
-    return rank;
+    std::unordered_map<std::string, int> merges;
+    merges.reserve(50000);
+    std::string line;
+    int rank = 0;
+    while (std::getline(ifs, line)) {
+        line = Trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream iss(line);
+        std::string a, b;
+        if (!(iss >> a >> b)) continue;
+        merges.emplace(PairKey(a, b), rank++);
+    }
+    return merges;
 }
 
-// ---------------- UTF-8 helpers ----------------
+// ---------------- UTF-8 utilities ----------------
+
 bool BpeTokenizer::IsAsciiSpace(unsigned char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
 }
@@ -95,7 +95,9 @@ bool BpeTokenizer::NextUtf8(const std::string& s, size_t& i, uint32_t& cp, size_
         unsigned char c1 = static_cast<unsigned char>(s[i+1]);
         unsigned char c2 = static_cast<unsigned char>(s[i+2]);
         if (((c1 & 0xC0) != 0x80) || ((c2 & 0xC0) != 0x80)) return false;
-        cp = ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
+        cp = ((c0 & 0x0F) << 12) |
+             ((c1 & 0x3F) << 6) |
+             (c2 & 0x3F);
         cp_len = 3; i += 3; return true;
     } else if ((c0 >> 3) == 0x1E) {
         if (i + 3 >= s.size()) return false;
@@ -103,11 +105,13 @@ bool BpeTokenizer::NextUtf8(const std::string& s, size_t& i, uint32_t& cp, size_
         unsigned char c2 = static_cast<unsigned char>(s[i+2]);
         unsigned char c3 = static_cast<unsigned char>(s[i+3]);
         if (((c1 & 0xC0) != 0x80) || ((c2 & 0xC0) != 0x80) || ((c3 & 0xC0) != 0x80)) return false;
-        cp = ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
+        cp = ((c0 & 0x07) << 18) |
+             ((c1 & 0x3F) << 12) |
+             ((c2 & 0x3F) << 6) |
+             (c3 & 0x3F);
         cp_len = 4; i += 4; return true;
-    } else {
-        return false;
     }
+    return false;
 }
 
 std::vector<std::string> BpeTokenizer::Utf8Chars(const std::string& s) {
@@ -115,9 +119,10 @@ std::vector<std::string> BpeTokenizer::Utf8Chars(const std::string& s) {
     chars.reserve(s.size());
     size_t i = 0;
     while (i < s.size()) {
-        uint32_t cp; size_t len;
-        if (!NextUtf8(s, i, cp, len)) break;
-        chars.emplace_back(s.substr(i - len, len));
+        size_t start = i;
+        uint32_t cp; size_t cp_len;
+        if (!NextUtf8(s, i, cp, cp_len)) break;
+        chars.emplace_back(s.substr(start, i - start));
     }
     return chars;
 }
@@ -214,7 +219,7 @@ std::vector<std::string> BpeTokenizer::PretokenizeSentencePiece(const std::strin
         if (!NextUtf8(text, i, cp, len)) break;
         if (IsUnicodeSpace(cp)) {
             if (!curr.empty()) {
-                out.emplace_back(ws_mark + curr);
+                out.push_back(ws_mark + curr);
                 curr.clear();
             }
         } else {
@@ -222,22 +227,22 @@ std::vector<std::string> BpeTokenizer::PretokenizeSentencePiece(const std::strin
         }
     }
     if (!curr.empty()) {
-        out.emplace_back(ws_mark + curr);
+        out.push_back(ws_mark + curr);
     }
     return out;
 }
 
-// ---------------- Pair key ----------------
+// ---------------- BPE core ----------------
+
 std::string BpeTokenizer::PairKey(const std::string& a, const std::string& b) {
-    std::string k;
-    k.reserve(a.size() + b.size() + 1);
-    k.append(a);
-    k.push_back('\t');
-    k.append(b);
-    return k;
+    std::string key;
+    key.reserve(a.size() + 1 + b.size());
+    key.append(a);
+    key.push_back('\t');
+    key.append(b);
+    return key;
 }
 
-// ---------------- BPE core ----------------
 const std::vector<std::string>& BpeTokenizer::BpeForPieceCached(const std::string& piece) const {
     {
         std::lock_guard<std::mutex> g(cache_mu_);
@@ -261,7 +266,7 @@ std::vector<std::string> BpeTokenizer::BpeForPiece(const std::string& piece) con
         int best_i = -1;
 
         for (int i = 0; i + 1 < static_cast<int>(symbols.size()); ++i) {
-            std::string key = PairKey(symbols[i], symbols[i+1]);
+            std::string key = PairKey(symbols[i], symbols[i + 1]);
             auto it = merges_rank_.find(key);
             if (it != merges_rank_.end()) {
                 int r = it->second;
@@ -279,9 +284,7 @@ std::vector<std::string> BpeTokenizer::BpeForPiece(const std::string& piece) con
     return symbols;
 }
 
-// ---------------- Token -> id mapping with fallback ----------------
 void BpeTokenizer::TokensToIds(const std::vector<std::string>& tokens, std::vector<int>& out) const {
-    out.reserve(out.size() + tokens.size());
     for (const auto& t : tokens) {
         auto it = token_to_id_.find(t);
         if (it != token_to_id_.end()) {
@@ -289,9 +292,9 @@ void BpeTokenizer::TokensToIds(const std::vector<std::string>& tokens, std::vect
         } else if (fallback_to_chars_) {
             auto chars = Utf8Chars(t);
             for (const auto& ch : chars) {
-                auto itc = token_to_id_.find(ch);
-                if (itc != token_to_id_.end()) {
-                    out.push_back(itc->second);
+                auto it2 = token_to_id_.find(ch);
+                if (it2 != token_to_id_.end()) {
+                    out.push_back(it2->second);
                 } else if (special_ids_.unk_id >= 0) {
                     out.push_back(special_ids_.unk_id);
                 }
@@ -311,8 +314,11 @@ BpeTokenizer::BpeTokenizer(BpeTokenizer&& other) noexcept
       fallback_to_chars_(other.fallback_to_chars_),
       use_byte_encoder_(other.use_byte_encoder_),
       byte_encoder_(std::move(other.byte_encoder_)),
-      byte_decoder_(std::move(other.byte_decoder_))
-{
+      byte_decoder_(std::move(other.byte_decoder_)),
+      additional_special_tokens_(std::move(other.additional_special_tokens_)),
+      additional_special_token_ids_(std::move(other.additional_special_token_ids_)),
+      additional_special_token_to_id_(std::move(other.additional_special_token_to_id_)),
+      additional_special_id_set_(std::move(other.additional_special_id_set_)) {
     // 迁移缓存（为安全起见加锁）
     std::lock_guard<std::mutex> lk(other.cache_mu_);
     bpe_cache_ = std::move(other.bpe_cache_);
@@ -331,6 +337,10 @@ BpeTokenizer& BpeTokenizer::operator=(BpeTokenizer&& other) noexcept {
         use_byte_encoder_ = other.use_byte_encoder_;
         byte_encoder_ = std::move(other.byte_encoder_);
         byte_decoder_ = std::move(other.byte_decoder_);
+        additional_special_tokens_ = std::move(other.additional_special_tokens_);
+        additional_special_token_ids_ = std::move(other.additional_special_token_ids_);
+        additional_special_token_to_id_ = std::move(other.additional_special_token_to_id_);
+        additional_special_id_set_ = std::move(other.additional_special_id_set_);
         bpe_cache_ = std::move(other.bpe_cache_);
         // cache_mu_ 仍为当前对象自己的 mutex
     }
@@ -389,6 +399,47 @@ void BpeTokenizer::EnsureSpecialTokens(const SpecialTokensConfig& spec, bool add
     ensure(spec.mask_token, special_ids_.mask_id);
 }
 
+void BpeTokenizer::AddAdditionalSpecialToken(const std::string& token,
+                                             bool add_if_missing) {
+    if (token.empty()) return;
+
+    // 已经是 additional_special_token 的话直接返回
+    auto it_exist = additional_special_token_to_id_.find(token);
+    if (it_exist != additional_special_token_to_id_.end()) {
+        return;
+    }
+
+    int id = -1;
+    auto it = token_to_id_.find(token);
+    if (it != token_to_id_.end()) {
+        id = it->second;
+    } else if (add_if_missing) {
+        id = static_cast<int>(id_to_token_.size());
+        id_to_token_.push_back(token);
+        token_to_id_.emplace(token, id);
+    } else {
+        // 既不在 vocab 中，也不允许新增，直接忽略
+        return;
+    }
+
+    additional_special_tokens_.push_back(token);
+    additional_special_token_ids_.push_back(id);
+    additional_special_token_to_id_.emplace(token, id);
+    additional_special_id_set_.insert(id);
+}
+
+void BpeTokenizer::SetAdditionalSpecialTokens(const std::vector<std::string>& tokens,
+                                              bool add_if_missing) {
+    additional_special_tokens_.clear();
+    additional_special_token_ids_.clear();
+    additional_special_token_to_id_.clear();
+    additional_special_id_set_.clear();
+
+    for (const auto& t : tokens) {
+        AddAdditionalSpecialToken(t, add_if_missing);
+    }
+}
+
 std::vector<int> BpeTokenizer::encode(const std::string& text,
                                       bool add_bos,
                                       bool add_eos,
@@ -400,25 +451,70 @@ std::vector<int> BpeTokenizer::encode(const std::string& text,
     if (add_cls && special_ids_.cls_id >= 0) ids.push_back(special_ids_.cls_id);
     if (add_bos && special_ids_.bos_id >= 0) ids.push_back(special_ids_.bos_id);
 
-    if (use_byte_encoder_) {
-        // New Logic: Byte-Level BPE
-        // 1. 将整个文本进行 ByteEncode (Raw Bytes -> Unicode Chars)
-        std::string encoded_text = ByteEncode(text);
+    // 先在原始串中按子串匹配 additional_special_tokens；
+    // 命中时：
+    //   1) flush 之前累积的普通文本（走 SentencePiece+BPE）
+    //   2) 直接输出 special id
+    std::string buffer;
+    buffer.reserve(text.size());
 
-        // 2. 直接进行 BPE (通常不需要再次 split by space，除非模仿 GPT-2 的 regex split)
-        // 简单起见，这里暂不引入复杂的 Regex split，直接对转码后的整串做 BPE
-        // 如果需要完全复刻 GPT-2，需要在 ByteEncode 前先做 Regex split
-        const auto& toks = BpeForPieceCached(encoded_text);
-        TokensToIds(toks, ids);
+    auto flush_buffer = [&]() {
+        if (buffer.empty()) return;
 
-    } else {
-        // Original Logic: SentencePiece-like Pretokenization
-        auto pieces = PretokenizeSentencePiece(text);
-        for (const auto& p : pieces) {
-            const auto& toks = BpeForPieceCached(p);
+        if (use_byte_encoder_) {
+            // New Logic: Byte-Level BPE
+            // 1. 将整个文本进行 ByteEncode (Raw Bytes -> Unicode Chars)
+            std::string encoded_text = ByteEncode(buffer);
+
+            // 2. 直接进行 BPE (通常不需要再次 split by space，除非模仿 GPT-2 的 regex split)
+            // 简单起见，这里暂不引入复杂的 Regex split，直接对转码后的整串做 BPE
+            // 如果需要完全复刻 GPT-2，需要在 ByteEncode 前先做 Regex split
+            const auto& toks = BpeForPieceCached(encoded_text);
             TokensToIds(toks, ids);
+        } else {
+            // Original Logic: SentencePiece-like Pretokenization
+            auto pieces = PretokenizeSentencePiece(buffer);
+            for (const auto& p : pieces) {
+                const auto& toks = BpeForPieceCached(p);
+                TokensToIds(toks, ids);
+            }
         }
+
+        buffer.clear();
+    };
+
+    size_t i = 0;
+    const size_t n = text.size();
+    while (i < n) {
+        int matched_index = -1;
+        size_t matched_len = 0;
+
+        // longest match：若多个 special token 共享前缀，选择更长的那个
+        if (!additional_special_tokens_.empty()) {
+            for (size_t k = 0; k < additional_special_tokens_.size(); ++k) {
+                const std::string& sp = additional_special_tokens_[k];
+                if (sp.empty()) continue;
+                size_t len = sp.size();
+                if (len <= matched_len) continue;
+                if (i + len <= n && text.compare(i, len, sp) == 0) {
+                    matched_index = static_cast<int>(k);
+                    matched_len = len;
+                }
+            }
+        }
+
+        if (matched_index >= 0) {
+            flush_buffer();
+            ids.push_back(additional_special_token_ids_[matched_index]);
+            i += matched_len;
+            continue;
+        }
+
+        buffer.push_back(text[i]);
+        ++i;
     }
+
+    flush_buffer();
 
     if (add_sep && special_ids_.sep_id >= 0) ids.push_back(special_ids_.sep_id);
     if (add_eos && special_ids_.eos_id >= 0) ids.push_back(special_ids_.eos_id);
@@ -436,7 +532,8 @@ std::string BpeTokenizer::decode(const std::vector<int>& ids, bool skip_special_
             id == special_ids_.bos_id || id == special_ids_.eos_id ||
             id == special_ids_.unk_id || id == special_ids_.sep_id ||
             id == special_ids_.pad_id || id == special_ids_.cls_id ||
-            id == special_ids_.mask_id;
+            id == special_ids_.mask_id ||
+            (additional_special_id_set_.find(id) != additional_special_id_set_.end());
 
         if (skip_special_tokens && is_special) continue;
 

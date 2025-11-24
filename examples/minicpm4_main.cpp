@@ -12,8 +12,9 @@ int main() {
                         "./assets/minicpm4_0.5b/vocab.txt",
                         "./assets/minicpm4_0.5b/merges.txt",
                        /*use_vulkan=*/false);
-                       
-    auto ctx = model.prefill("写一个cpp的快速排序代码, \n");
+                    
+
+    auto ctx = model.prefill("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nonnx是什么？<|im_end|>\n<|im_start|>assistant\n");
     model.decode(ctx, [](const std::string& token) {
         std::string output = token;
 
