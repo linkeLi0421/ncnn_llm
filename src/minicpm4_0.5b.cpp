@@ -25,6 +25,8 @@ public:
 
     BpeTokenizer bpe;
 
+    int im_end_id = -1;
+
     Impl(std::string embed_param,
          std::string embed_bin,
          std::string proj_out_param,
@@ -55,6 +57,20 @@ public:
         proj_out_net.load_model(embed_bin.c_str());
         decoder_net.load_param(decoder_param.c_str());
         decoder_net.load_model(decoder_bin.c_str());
+
+        bpe.AddAdditionalSpecialToken("<|im_end|>");
+        bpe.AddAdditionalSpecialToken("<|im_start|>");
+        bpe.AddAdditionalSpecialToken("<|tool_call|>");
+        bpe.AddAdditionalSpecialToken("<|execute_start|>");
+        bpe.AddAdditionalSpecialToken("<|execute_end|>");
+        bpe.AddAdditionalSpecialToken("<|fim_prefix|>");
+        bpe.AddAdditionalSpecialToken("<|fim_middle|>");
+        bpe.AddAdditionalSpecialToken("<|fim_suffix|>");
+
+        auto it = bpe.token_to_id().find("<|im_end|>");
+        if (it != bpe.token_to_id().end()) {
+            im_end_id = it->second;
+        }
     }
 };
 
@@ -428,7 +444,7 @@ std::shared_ptr<minicpm4_0_5b_ctx> minicpm4_0_5b::prefill(const std::string& inp
 bool minicpm4_0_5b::decode(std::shared_ptr<minicpm4_0_5b_ctx> ctx,
                             std::function<void(const std::string&)> callback) {
 
-    while (ctx->cur_token != impl_->bpe.special_ids().eos_id) {
+    while (ctx->cur_token != impl_->im_end_id || impl_->im_end_id == impl_->bpe.special_ids().eos_id) {
         callback(impl_->bpe.id_to_token()[ctx->cur_token]);
 
         ncnn::Mat cur_token_mat = ncnn::Mat(1, 1, (void*)&ctx->cur_token).clone();
