@@ -57,11 +57,23 @@ TODO LIST:
 git clone https://github.com/futz12/ncnn_llm.git
 cd ncnn_llm
 xmake build
-xmake run nllb_main
+xmake run minicpm4_main
 ```
 
-然后下载模型
-下载完成后 指定路径 即可运行
+## 效果测试
 
-nllb_main --model-dir ../../assets/ncnn_llm_nllb_600m/
+minicpm4
+
+```
+ *  正在执行任务: xmake run minicpm4_main 
+
+Chat with MiniCPM4-0.5B! Type 'exit' or 'quit' to end the conversation.
+User: 你好
+Assistant: 
+你好，我是你的智能助手。我可以帮助你查询天气、新闻、音乐、翻译等。请问你有什么需要帮助的吗？
+User: 测试
+Assistant:  你好，我是你的智能助手。你好，请问有什么我可以帮助你的吗？
+User: 你知道什么是opencv吗？
+Assistant:  opencv，全称OpenCV，是一个开源的计算机视觉和机器学习软件库，它包含了许多用于图像和视频处理的算法和工具。它可以帮助 你处理和理解图像和视频数据，从而实现各种计算机视觉任务，如目标检测、图像分类、人脸识别等。你是否对某个具体的任务或者算法感兴趣 ？
+```
 
