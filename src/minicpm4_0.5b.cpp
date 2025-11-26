@@ -395,7 +395,7 @@ std::shared_ptr<minicpm4_0_5b_ctx> minicpm4_0_5b::prefill(const std::string& inp
     ncnn::Mat last_cos_cache;
     ncnn::Mat last_sin_cache;
 
-    generate_rope_embed_cache(1, 64, (int)token_ids.size() + ctx->kv_cache[0].first.h, last_cos_cache, last_sin_cache);
+    generate_rope_embed_cache(1, 64, ctx->kv_cache[0].first.h, last_cos_cache, last_sin_cache);
     ncnn::Mat last_mask(ctx->kv_cache[0].first.h + 1, 1);
     last_mask.fill(0.0f);
 
