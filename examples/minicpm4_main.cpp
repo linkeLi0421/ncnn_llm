@@ -31,7 +31,13 @@ int main() {
         ctx = model.prefill(user_message, ctx);
         
         std::cout << "Assistant: ";
-        model.decode(ctx, [](const std::string& token) {
+        GenerateConfig cfg;
+        cfg.beam_size = 2;
+        cfg.top_k = 40;
+        cfg.top_p = 0.9;
+        cfg.temperature = 0.7;
+
+        model.generate(ctx, cfg, [](const std::string& token){
             std::string token_str = token;
             // replace /t/n with actual newline
             size_t pos = 0;

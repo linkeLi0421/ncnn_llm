@@ -22,7 +22,7 @@ struct GenerateConfig {
     float temperature = 0.3f;
     float top_p = 0.8f;
     int top_k = 50;
-    float repetition_penalty = 1.0f;
+    float repetition_penalty = 1.1f;
     int beam_size = 1;
     int do_sample = 1;
 };
@@ -48,6 +48,8 @@ public:
 
     std::shared_ptr<minicpm4_0_5b_ctx> prefill(const std::string& input_text,
                                          const std::shared_ptr<minicpm4_0_5b_ctx> ctx);
+
+    bool generate(std::shared_ptr<minicpm4_0_5b_ctx> ctx, const GenerateConfig& cfg, std::function<void(const std::string&)> callback);
 
     bool decode(std::shared_ptr<minicpm4_0_5b_ctx> ctx,
                 std::function<void(const std::string&)> callback);

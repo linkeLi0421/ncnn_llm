@@ -6,10 +6,89 @@
 #include <ncnn/net.h>
 #include <utility>
 #include <vector>
+#include <random>
 
 #include "utils/tokenizer/bpe_tokenizer.h"
 
+static std::mt19937 rng(std::random_device{}());
+
 const static int attn_cnt = 24;
+
+struct minicpm4_0_5b_ctx {
+    std::vector<std::pair<ncnn::Mat, ncnn::Mat>> kv_cache;
+
+    int cur_token = 0;
+};
+
+// ---------- Softmax ----------
+static void softmax(std::vector<float>& logits, float temperature) {
+    float max_logit = *std::max_element(logits.begin(), logits.end());
+    float sum = 0.f;
+    for (float& x : logits) {
+        x = std::exp((x - max_logit) / temperature);
+        sum += x;
+    }
+    for (float& x : logits) x /= sum;
+}
+
+// ---------- Top-K ----------
+static void top_k(std::vector<float>& probs, int k) {
+    if (k <= 0 || k >= (int)probs.size()) return;
+    std::vector<float> sorted = probs;
+    std::nth_element(sorted.begin(), sorted.end() - k, sorted.end());
+    float threshold = sorted[sorted.size() - k];
+    for (float& p : probs) if (p < threshold) p = 0.f;
+}
+
+// ---------- Top-p ----------
+static void top_p(std::vector<float>& probs, float p) {
+    std::vector<std::pair<float,int>> v;
+    v.reserve(probs.size());
+    for (int i = 0; i < (int)probs.size(); i++)
+        v.emplace_back(probs[i], i);
+    std::sort(v.begin(), v.end(), std::greater<>());
+
+    float cum = 0.f;
+    float last_prob = 0.f;
+    for (size_t i = 0; i < v.size(); i++) {
+        cum += v[i].first;
+        last_prob = v[i].first;
+        if (cum >= p) break;
+    }
+
+    for (float& x : probs)
+        if (x < last_prob) x = 0.f;
+}
+
+// ---------- 采样 ----------
+static int sample_prob(const std::vector<float>& prob) {
+    std::discrete_distribution<int> dist(prob.begin(), prob.end());
+    return dist(rng);
+}
+
+// ===============================================================
+//                     Beam 状态结构
+// ===============================================================
+struct Beam {
+    std::shared_ptr<minicpm4_0_5b_ctx> ctx;
+    float score = 0.f;
+    bool finished = false;
+    std::vector<int> tokens;
+};
+
+// 深拷贝 KV Cache
+static std::shared_ptr<minicpm4_0_5b_ctx>
+clone_ctx(const std::shared_ptr<minicpm4_0_5b_ctx>& src) {
+    auto dst = std::make_shared<minicpm4_0_5b_ctx>();
+
+    dst->cur_token = src->cur_token;
+    dst->kv_cache.resize(src->kv_cache.size());
+    for (size_t i = 0; i < src->kv_cache.size(); i++) {
+        dst->kv_cache[i].first = src->kv_cache[i].first.clone();
+        dst->kv_cache[i].second = src->kv_cache[i].second.clone();
+    }
+    return dst;
+}
 
 std::string make_chat_prompt(const std::vector<Message>& messages, bool add_generation_prompt)
 {
@@ -33,11 +112,6 @@ std::string make_chat_prompt(const std::vector<Message>& messages, bool add_gene
     return prompt;
 }
 
-struct minicpm4_0_5b_ctx {
-    std::vector<std::pair<ncnn::Mat, ncnn::Mat>> kv_cache;
-
-    int cur_token = 0;
-};
 
 class minicpm4_0_5b::Impl {
 public:
@@ -518,6 +592,156 @@ bool minicpm4_0_5b::decode(std::shared_ptr<minicpm4_0_5b_ctx> ctx,
             next_token_id = max_idx;
         }
         ctx->cur_token = next_token_id;
+    }
+
+    return true;
+}
+
+
+bool minicpm4_0_5b::generate(
+    std::shared_ptr<minicpm4_0_5b_ctx> ctx,
+    const GenerateConfig& cfg,
+    std::function<void(const std::string&)> callback)
+{
+    const int vocab_size = impl_->bpe.vocab_size();
+    const int eos = impl_->bpe.special_ids().eos_id;
+    const int im_end = impl_->im_end_id;
+
+    // Beam 初始化
+    std::vector<Beam> beams(cfg.beam_size);
+    for (int i = 0; i < cfg.beam_size; i++) {
+        beams[i].ctx = clone_ctx(ctx);
+        beams[i].tokens.push_back(ctx->cur_token);
+    }
+
+    for (int step = 0; step < cfg.max_new_tokens; step++) {
+        std::vector<Beam> new_beams;
+
+        for (auto& beam : beams) {
+            if (beam.finished) {
+                new_beams.push_back(beam);
+                continue;
+            }
+
+            // ---------- 运行模型推理 ----------
+            minicpm4_0_5b_ctx& bctx = *beam.ctx;
+
+            ncnn::Mat token_mat = ncnn::Mat(1, 1, (void*)&bctx.cur_token).clone();
+            ncnn::Mat token_embed;
+            {
+                ncnn::Extractor ex = impl_->embed_net.create_extractor();
+                ex.input("in0", token_mat);
+                ex.extract("out0", token_embed);
+            }
+
+            ncnn::Mat cos_cache, sin_cache;
+            generate_rope_embed_cache(1, 64, bctx.kv_cache[0].first.h, cos_cache, sin_cache);
+
+            ncnn::Mat mask(bctx.kv_cache[0].first.h + 1, 1);
+            mask.fill(0.0f);
+
+            ncnn::Mat decode_out;
+            {
+                ncnn::Extractor ex = impl_->decoder_net.create_extractor();
+                ex.input("in0", token_embed);
+                ex.input("in1", mask);
+                ex.input("in2", cos_cache);
+                ex.input("in3", sin_cache);
+
+                for (int i = 0; i < attn_cnt; i++) {
+                    char kname[16], vname[16];
+                    std::snprintf(kname, sizeof(kname), "cache_k%d", i);
+                    std::snprintf(vname, sizeof(vname), "cache_v%d", i);
+                    ex.input(kname, bctx.kv_cache[i].first);
+                    ex.input(vname, bctx.kv_cache[i].second);
+                }
+
+                for (int i = 0; i < attn_cnt; i++) {
+                    char kname[32], vname[32];
+                    std::snprintf(kname, sizeof(kname), "out_cache_k%d", i);
+                    std::snprintf(vname, sizeof(vname), "out_cache_v%d", i);
+                    ncnn::Mat k_cache, v_cache;
+                    ex.extract(kname, k_cache);
+                    ex.extract(vname, v_cache);
+                    bctx.kv_cache[i] = { k_cache, v_cache };
+                }
+
+                ex.extract("out0", decode_out);
+            }
+
+            ncnn::Mat logits_mat;
+            {
+                ncnn::Extractor ex = impl_->proj_out_net.create_extractor();
+                ex.input("in0", decode_out);
+                ex.extract("out0", logits_mat);
+            }
+
+            std::vector<float> logits(vocab_size);
+            memcpy(logits.data(), logits_mat.data, sizeof(float) * vocab_size);
+
+            // ---------- Repetition penalty ----------
+            for (int t : beam.tokens)
+                logits[t] /= cfg.repetition_penalty;
+
+            // ---------- Softmax + 采样 ----------
+            softmax(logits, cfg.temperature);
+
+            if (cfg.top_k > 0) top_k(logits, cfg.top_k);
+            if (cfg.top_p < 1.0f) top_p(logits, cfg.top_p);
+
+            // ---------- Beam 扩展 ----------
+            if (cfg.do_sample == 1) {
+                int next = sample_prob(logits);
+                Beam nb = beam;
+                nb.ctx = clone_ctx(beam.ctx);
+                nb.ctx->cur_token = next;
+                nb.tokens.push_back(next);
+                nb.score += std::log(logits[next] + 1e-9f);
+                if (next == eos || next == im_end) nb.finished = true;
+                new_beams.emplace_back(std::move(nb));
+            } else {
+                // 不采样 → 取 top-k 扩展 beam
+                std::vector<std::pair<float,int>> top;
+                top.reserve(cfg.beam_size * 2);
+                for (int i = 0; i < vocab_size; i++)
+                    top.emplace_back(logits[i], i);
+
+                std::partial_sort(top.begin(), top.begin() + cfg.beam_size, top.end(),
+                                  [](auto& a, auto& b) { return a.first > b.first; });
+
+                for (int i = 0; i < cfg.beam_size; i++) {
+                    int next = top[i].second;
+                    float p = top[i].first;
+                    Beam nb = beam;
+                    nb.ctx = clone_ctx(beam.ctx);
+                    nb.ctx->cur_token = next;
+                    nb.tokens.push_back(next);
+                    nb.score += std::log(p + 1e-9f);
+                    if (next == eos || next == im_end) nb.finished = true;
+                    new_beams.emplace_back(std::move(nb));
+                }
+            }
+        }
+
+        // ---------- 重新选择 beam_size ----------
+        std::sort(new_beams.begin(), new_beams.end(),
+                  [](auto& a, auto& b) { return a.score > b.score; });
+
+        new_beams.resize(cfg.beam_size);
+        beams = std::move(new_beams);
+
+        // ---------- 发 token（使用最佳 beam） ----------
+        int token = beams[0].ctx->cur_token;
+
+        if (token == eos || token == im_end || beams[0].finished) {
+            break;
+        }
+
+        
+        callback(impl_->bpe.id_to_token()[token]);
+
+        if (beams[0].finished)
+            break;
     }
 
     return true;
