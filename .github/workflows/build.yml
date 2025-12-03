@@ -40,7 +40,12 @@ jobs:
       run: xmake -y -v
 
     - name: Install to Distribution Directory
-      run: xmake install -o dist -m release
+      run: xmake install -o dist -y
+
+    - name: Run Tests (Skipped for missing target)
+      shell: bash
+      run: |
+        echo "Skipping 'xmake run tests' as the target 'tests' is not defined."
 
     - name: Package Binaries (Linux/macOS)
       if: runner.os != 'Windows'
@@ -78,7 +83,7 @@ jobs:
         Write-Host "-----------------------------------------"
 
         $ARCHIVE_NAME = "ncnn_llm_Windows.zip"
-
+        
         Compress-Archive -Path "dist\*" -DestinationPath $ARCHIVE_NAME -Force
         
         echo "archive_name=$ARCHIVE_NAME" >> $env:GITHUB_OUTPUT
