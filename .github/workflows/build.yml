@@ -39,52 +39,49 @@ jobs:
     - name: Build Project
       run: xmake -y -v
 
-    - name: Run Tests (Skipped for missing target)
-      shell: bash
-      run: |
-        echo "Skipping 'xmake run tests' as the target 'tests' is not defined."
+    - name: Install to Distribution Directory
+      run: xmake install -o dist -m release
 
     - name: Package Binaries (Linux/macOS)
       if: runner.os != 'Windows'
       id: package_unix
       run: |
-        OUTPUT_DIR=$(xmake show buildir -m release) 
-
-        if [[ -z "$OUTPUT_DIR" || ! -d "$OUTPUT_DIR" ]]; then
-          echo "Error: Could not determine or find the xmake output directory."
+        if [ ! -d "dist" ]; then
+          echo "Error: dist directory not found. Did xmake install fail?"
           exit 1
         fi
 
-        echo "--- Debug: Contents of Final Output Directory ($OUTPUT_DIR) ---"
-        # Display files and sizes from the correct output location
-        ls -lR "$OUTPUT_DIR"
-        echo "---------------------------------------------------------"
+        echo "--- Debug: Contents of Dist Directory ---"
+        ls -lR dist
+        echo "-----------------------------------------"
 
         ARCHIVE_NAME="ncnn_llm_${{ runner.os }}.zip"
-        echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
 
-        zip -r "$ARCHIVE_NAME" "$OUTPUT_DIR/"*
+        cd dist
+        zip -r "../$ARCHIVE_NAME" .
+        cd ..
+
+        echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
 
     - name: Package Binaries (Windows)
       if: runner.os == 'Windows'
       id: package_windows
       shell: powershell
       run: |
-        $OUTPUT_DIR = (xmake show buildir -m release)
-        
-        if ([string]::IsNullOrEmpty($OUTPUT_DIR) -or -not (Test-Path $OUTPUT_DIR)) {
-            Write-Error "Could not determine or find the xmake output directory."
+        if (-not (Test-Path "dist")) {
+            Write-Error "dist directory not found."
             exit 1
         }
 
-        Write-Host "--- Debug: Contents of Final Output Directory ($OUTPUT_DIR) ---"
-        Get-ChildItem -Recurse -Path $OUTPUT_DIR | Format-Table Name, Length -AutoSize
-        Write-Host "---------------------------------------------------------"
+        Write-Host "--- Debug: Contents of Dist Directory ---"
+        Get-ChildItem -Recurse -Path dist | Format-Table Name, Length -AutoSize
+        Write-Host "-----------------------------------------"
 
         $ARCHIVE_NAME = "ncnn_llm_Windows.zip"
-        echo "archive_name=$ARCHIVE_NAME" >> $env:GITHUB_OUTPUT
 
-        Compress-Archive -Path "$OUTPUT_DIR\*" -DestinationPath $ARCHIVE_NAME -Force
+        Compress-Archive -Path "dist\*" -DestinationPath $ARCHIVE_NAME -Force
+        
+        echo "archive_name=$ARCHIVE_NAME" >> $env:GITHUB_OUTPUT
 
     - name: Upload Packaged Artifact
       uses: actions/upload-artifact@v4
@@ -97,9 +94,7 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    
     if: startsWith(github.ref, 'refs/tags/')
-
     steps:
       - name: Download all platform artifacts
         uses: actions/download-artifact@v4
