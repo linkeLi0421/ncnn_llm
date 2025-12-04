@@ -524,7 +524,14 @@ std::string BpeTokenizer::decode(const std::vector<int>& ids, bool skip_special_
 
         if (skip_special_tokens && is_special) continue;
 
-        s += tok;
+        if (tok == "\\t")
+            s += '\t';
+        else if (tok == "\\n")
+            s += '\n';
+        else if (tok == "\\r")
+            s += '\r';
+        else
+            s += tok;
     }
 
     if (!s.empty()) {
