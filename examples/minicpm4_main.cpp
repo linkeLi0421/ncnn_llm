@@ -32,7 +32,7 @@ int main() {
         }
         std::string user_message = apply_chat_template({
             {"user", input}
-        }, {}, true, false);
+        }, {}, true);
 
         ctx = model.prefill(user_message, ctx);
         
