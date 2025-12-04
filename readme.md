@@ -42,7 +42,7 @@ Future plans include but are not limited to:
 
 TODO LIST:
 - [x] MiniCPM4-0.5B
-- [ ] QWen3 0.6B
+- [x] QWen3 0.6B
 - [ ] INT8 量化
 - [ ] 完善的推理过程
 
