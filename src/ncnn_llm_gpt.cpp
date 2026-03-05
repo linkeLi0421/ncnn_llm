@@ -15,7 +15,7 @@ static std::shared_ptr<ncnn_llm_gpt_ctx> clone_ctx(const std::shared_ptr<ncnn_ll
 
 // Class Implementation
 
-ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan) {
+ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int num_threads, int vulkan_device) {
     try {
         json config;
         {
@@ -28,17 +28,26 @@ ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan) {
         embed_net = std::make_shared<ncnn::Net>();
         proj_out_net = std::make_shared<ncnn::Net>();
 
+        // Set number of threads (0 = use ncnn default which is get_cpu_count())
+        if (num_threads > 0) {
+            decoder_net->opt.num_threads = num_threads;
+            embed_net->opt.num_threads = num_threads;
+            proj_out_net->opt.num_threads = num_threads;
+        }
+
         if (use_vulkan) {
             decoder_net->opt.use_vulkan_compute = true;
             embed_net->opt.use_vulkan_compute = true;
             proj_out_net->opt.use_vulkan_compute = true;
+            
+            // Note: ncnn selects Vulkan device automatically
+            // To use a specific device, set NCNN_VULKAN_DEVICE environment variable
+            (void)vulkan_device;  // Unused for now
         }
 
-        if (true) {
-            decoder_net->opt.use_fp16_storage = true;
-            embed_net->opt.use_fp16_storage = true;
-            proj_out_net->opt.use_fp16_storage = true;
-        }
+        decoder_net->opt.use_fp16_storage = true;
+        embed_net->opt.use_fp16_storage = true;
+        proj_out_net->opt.use_fp16_storage = true;
 
         std::string decoder_param = model_path + "/" + config["params"]["decoder_param"].get<std::string>();
         std::string decoder_bin = model_path + "/" + config["params"]["decoder_bin"].get<std::string>();

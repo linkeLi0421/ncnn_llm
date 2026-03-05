@@ -120,7 +120,7 @@ protected:
     std::vector<nlohmann::json> tools;
 
 public:
-    ncnn_llm_gpt(const std::string& model_path, bool use_vulkan = false);
+    ncnn_llm_gpt(const std::string& model_path, bool use_vulkan = false, int num_threads = 0, int vulkan_device = 0);
 
     std::shared_ptr<ncnn_llm_gpt_ctx> prefill(const std::string& input_text) const;
     std::shared_ptr<ncnn_llm_gpt_ctx> prefill(const std::string& input_text, const cv::Mat& bgr, const std::shared_ptr<ncnn_llm_gpt_ctx> ctx) const;

@@ -4,19 +4,45 @@
 #include "tools.h"
 
 #include <iostream>
+#include <fstream>
+
+TemplateType detect_template_type(const std::string& model_path) {
+    try {
+        std::ifstream ifs(model_path + "/model.json");
+        if (!ifs.is_open()) {
+            return TemplateType::CHATML;  // Default
+        }
+        
+        json config;
+        ifs >> config;
+        
+        if (config.contains("type")) {
+            std::string type = config["type"].get<std::string>();
+            if (type == "youtu_llm") {
+                return TemplateType::YOUTU;
+            }
+        }
+    } catch (...) {
+        // Ignore errors, default to CHATML
+    }
+    
+    return TemplateType::CHATML;
+}
 
 int run_cli(const Options& opt,
             ncnn_llm_gpt& model,
             const std::vector<json>& builtin_tools,
-            const std::unordered_map<std::string, std::function<json(const json&)>>& builtin_router
+            const std::unordered_map<std::string, std::function<json(const json&)>>& builtin_router,
+            TemplateType template_type
 #if NCNN_LLM_WITH_OPENCV
             , const cv::Mat& image
 #endif
             ) {
     std::cout << "llm_ncnn_run (cli). Type 'exit' or 'quit' to end the conversation.\n";
+    std::cout << "Using template: " << (template_type == TemplateType::YOUTU ? "YouTu" : "ChatML") << "\n";
 
     std::string system_prompt = "You are a helpful assistant.";
-    std::string prompt = apply_chat_template({{"system", system_prompt}}, {}, false, false);
+    std::string prompt = apply_chat_template(template_type, {{"system", system_prompt}}, {}, false, false);
     auto ctx = model.prefill(prompt);
 
     if (!builtin_tools.empty()) {
@@ -39,19 +65,19 @@ int run_cli(const Options& opt,
 
 #if NCNN_LLM_WITH_OPENCV
         if (first_turn && has_image) {
-            std::string user_message = apply_chat_template({
+            std::string user_message = apply_chat_template(template_type, {
                 {"user", "<|vision_start|><|image_pad|><|vision_end|>" + input}
             }, {}, true, false);
             ctx = model.prefill(user_message, image, ctx);
             first_turn = false;
         } else {
-            std::string user_message = apply_chat_template({
+            std::string user_message = apply_chat_template(template_type, {
                 {"user", input}
             }, {}, true, false);
             ctx = model.prefill(user_message, ctx);
         }
 #else
-        std::string user_message = apply_chat_template({
+        std::string user_message = apply_chat_template(template_type, {
             {"user", input}
         }, {}, true, true);
         ctx = model.prefill(user_message, ctx);
@@ -100,6 +126,7 @@ int run_cli(const Options& opt,
         ctx = model.generate(ctx, cfg, [](const std::string& token) {
             std::cout << token << std::flush;
         });
+
         std::cout << "\n";
     }
 

@@ -17,12 +17,15 @@ void print_usage(const char* argv0) {
         << "  --model <path>             Model path (default: ./assets/qwen3_0.6b)\n"
         << "  --image <path>             Image path for VL models (optional)\n"
         << "  --use-vulkan               Enable Vulkan backend\n"
+        << "  --vulkan-device <index>    Vulkan device index (default: 0)\n"
+        << "  --threads <num>            Number of CPU threads (default: auto)\n"
         << "  --no-builtin-tools         Disable built-in tools (random/add)\n"
         << "  --help                     Show this help\n"
         << "\n"
         << "Examples:\n"
         << "  " << (argv0 ? argv0 : "llm_ncnn_run") << "\n"
         << "  " << (argv0 ? argv0 : "llm_ncnn_run") << " --model ./assets/qwen3_0.6b\n"
+        << "  " << (argv0 ? argv0 : "llm_ncnn_run") << " --model ./assets/qwen3_0.6b --threads 4\n"
         << "  " << (argv0 ? argv0 : "llm_ncnn_run") << " --model ./assets/qwen2.5_vl_3b --image ./assets/test.jpg\n";
 }
 
@@ -52,6 +55,18 @@ Options parse_options(int argc, char** argv) {
             opt.image_path = argv[++i];
         } else if (a == "--use-vulkan") {
             opt.use_vulkan = true;
+        } else if (a == "--vulkan-device") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --vulkan-device\n";
+                std::exit(2);
+            }
+            opt.vulkan_device = std::atoi(argv[++i]);
+        } else if (a == "--threads") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --threads\n";
+                std::exit(2);
+            }
+            opt.num_threads = std::atoi(argv[++i]);
         } else if (a == "--no-builtin-tools") {
             opt.enable_builtin_tools = false;
         } else {
