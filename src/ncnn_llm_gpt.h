@@ -43,7 +43,6 @@ struct GenerateConfig {
     float top_p = 0.8f;
     int top_k = 50;
     float repetition_penalty = 1.1f;
-    int beam_size = 1;
     int do_sample = 1;
 
     std::function<nlohmann::json(const nlohmann::json&)> tool_callback = nullptr;
@@ -56,20 +55,6 @@ struct ncnn_llm_gpt_ctx
     std::vector<std::pair<ncnn::Mat, ncnn::Mat>> kv_cache;
     int cur_token = 0;
     int position_id = 0;
-};
-
-struct Beam {
-    std::shared_ptr<ncnn_llm_gpt_ctx> ctx;
-    float score = 0.f;
-    bool finished = false;
-    bool in_tool_call = false;
-    std::string tool_buffer;
-    std::unordered_set<int> tokens;
-    std::vector<int> token_history;  // Complete token sequence for this beam
-    std::vector<bool> token_in_tool_call;  // Whether each token was generated inside a tool call
-    
-    int prev_token = -1;
-    bool prev_in_tool_call = false;
 };
 
 class ncnn_llm_gpt {

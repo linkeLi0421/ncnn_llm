@@ -655,363 +655,114 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::generate(const std::shared_ptr<n
         ctx_ref = prefill(tool_response_pre + tool_resp.dump() + tool_response_post, ctx_ref);
     };
 
-    if (cfg.do_sample == 1 || cfg.beam_size <= 1) {
-        auto ctx = clone_ctx(ctx_in);
-        std::unordered_set<int> history;
-        history.insert(ctx->cur_token);
+    auto ctx = clone_ctx(ctx_in);
+    std::unordered_set<int> history;
+    history.insert(ctx->cur_token);
 
-        bool flag_in_tool_call = false;
-        std::string tool_call_content;
-
-        for (int step = 0; step < cfg.max_new_tokens; ++step) {
-            if (ctx->cur_token == eos) break;
-
-            if (ctx->cur_token == tool_call_id) {
-                flag_in_tool_call = true;
-            } else if (ctx->cur_token == tool_call_end_id) {
-                flag_in_tool_call = false;
-                handle_tool(tool_call_content, ctx);
-                tool_call_content.clear();
-                history.clear();
-                history.insert(ctx->cur_token);
-                continue;
-            } else if (flag_in_tool_call) {
-                tool_call_content += bpe->decode({ctx->cur_token}, false);
-            } else {
-                callback(bpe->decode({ctx->cur_token}, false));
-            }
-
-            ncnn::Mat cur_token_mat = ncnn::Mat(1, 1, (void*)&ctx->cur_token).clone();
-            ncnn::Mat cur_embed;
-            {
-                ncnn::Extractor ex = embed_net->create_extractor();
-                ex.input("in0", cur_token_mat);
-                ex.extract("out0", cur_embed);
-            }
-
-            ncnn::Mat cos_cache, sin_cache;
-            if (rope_type == RoPE_Type::LongRoPE) {
-                generate_rope_embed_cache_LongRoPE(1, rope_head_dim, ctx->position_id, cos_cache, sin_cache, rope_theta, short_factor.data(), long_factor.data(), original_max_position_embeddings);
-            } else if (rope_type == RoPE_Type::NTK_RoPE) {
-                generate_ntk_rope_embed_cache(1, rope_head_dim, ctx->position_id, cos_cache, sin_cache, rope_theta, ntk_scaling_params);
-            } else if (rope_type == RoPE_Type::YARN_RoPE) {
-                generate_yarn_rope_embed_cache(1, rope_head_dim, ctx->position_id, cos_cache, sin_cache, rope_theta, ntk_scaling_params);
-            }
-            else {
-                generate_rope_embed_cache(1, rope_head_dim, ctx->position_id, cos_cache, sin_cache, rope_theta);
-            }
-            
-            ctx->position_id++;
-
-            ncnn::Mat mask(ctx->kv_cache[0].first.h + 1, 1);
-            mask.fill(0.f);
-
-            ncnn::Mat decode_out;
-            {
-                ncnn::Extractor ex = decoder_net->create_extractor();
-                ex.input("in0", cur_embed);
-                ex.input("in1", mask);
-                ex.input("in2", cos_cache);
-                ex.input("in3", sin_cache);
-
-                for (int i = 0; i < attn_cnt; ++i) {
-                    char kname[16], vname[16];
-                    std::snprintf(kname, sizeof(kname), "cache_k%d", i);
-                    std::snprintf(vname, sizeof(vname), "cache_v%d", i);
-                    ex.input(kname, ctx->kv_cache[i].first);
-                    ex.input(vname, ctx->kv_cache[i].second);
-                }
-
-                for (int i = 0; i < attn_cnt; ++i) {
-                    char kname[32], vname[32];
-                    std::snprintf(kname, sizeof(kname), "out_cache_k%d", i);
-                    std::snprintf(vname, sizeof(vname), "out_cache_v%d", i);
-                    ncnn::Mat k_cache, v_cache;
-                    ex.extract(kname, k_cache);
-                    ex.extract(vname, v_cache);
-                    ctx->kv_cache[i] = { std::move(k_cache), std::move(v_cache) };
-                }
-                ex.extract("out0", decode_out);
-            }
-
-            ncnn::Mat logits_mat;
-            {
-                ncnn::Extractor ex = proj_out_net->create_extractor();
-                ex.input("in0", decode_out);
-                ex.extract("out0", logits_mat);
-            }
-
-            std::vector<float> logits(vocab_size);
-            memcpy(logits.data(), logits_mat.data, sizeof(float) * vocab_size);
-
-            for (int t : history) {
-                if (logits[t] < 0) logits[t] *= cfg.repetition_penalty;
-                else logits[t] /= cfg.repetition_penalty;
-            }
-
-            softmax_vec(logits, cfg.temperature);
-            if (cfg.top_k > 0) apply_top_k(logits, cfg.top_k);
-            if (cfg.top_p < 1.0f) apply_top_p(logits, cfg.top_p);
-
-            int next_id;
-            if (cfg.do_sample == 1) {
-                next_id = sample_from_probs(logits);
-            } else {
-                next_id = std::max_element(logits.begin(), logits.end()) - logits.begin();
-            }
-
-            ctx->cur_token = next_id;
-            history.insert(next_id);
-        }
-        return ctx;
-    }
-
-    // Beam Search Implementation
-    auto base_ctx = clone_ctx(ctx_in);
-    std::vector<Beam> beams;
-    beams.reserve(cfg.beam_size);
-
-    Beam b0;
-    b0.ctx = base_ctx;
-    b0.tokens.insert(base_ctx->cur_token);
-    b0.token_history.push_back(base_ctx->cur_token);
-    b0.token_in_tool_call.push_back(false);
-    b0.prev_token = -1;
-    beams.push_back(std::move(b0));
-
-    if (beams[0].ctx->cur_token == tool_call_id) {
-        beams[0].in_tool_call = true;
-        beams[0].token_in_tool_call[0] = true;
-    }
-
-    // Track how many tokens have been emitted for real-time output
-    size_t emitted_count = 0;
+    bool flag_in_tool_call = false;
+    std::string tool_call_content;
 
     for (int step = 0; step < cfg.max_new_tokens; ++step) {
-        std::vector<Beam> candidates;
-        candidates.reserve(cfg.beam_size * 2);
+        if (ctx->cur_token == eos) break;
 
-        Beam tool_completed;
-        bool has_tool_completed = false;
-
-        for (auto& beam : beams) {
-            auto& bctx = *beam.ctx;
-            if (beam.finished || bctx.cur_token == eos) {
-                beam.finished = true;
-                candidates.push_back(beam);
-                continue;
-            }
-
-            ncnn::Mat cur_token_mat = ncnn::Mat(1, 1, (void*)&bctx.cur_token).clone();
-            ncnn::Mat cur_embed;
-            {
-                ncnn::Extractor ex = embed_net->create_extractor();
-                ex.input("in0", cur_token_mat);
-                ex.extract("out0", cur_embed);
-            }
-
-            ncnn::Mat cos_cache, sin_cache;
-            if (rope_type == RoPE_Type::LongRoPE) {
-                generate_rope_embed_cache_LongRoPE(1, rope_head_dim, bctx.position_id, cos_cache, sin_cache, rope_theta, short_factor.data(), long_factor.data(), original_max_position_embeddings);
-            } else if (rope_type == RoPE_Type::NTK_RoPE) {
-                generate_ntk_rope_embed_cache(1, rope_head_dim, bctx.position_id, cos_cache, sin_cache, rope_theta, ntk_scaling_params);
-            } else if (rope_type == RoPE_Type::YARN_RoPE) {
-                generate_yarn_rope_embed_cache(1, rope_head_dim, bctx.position_id, cos_cache, sin_cache, rope_theta, ntk_scaling_params);
-            }
-            else {
-                generate_rope_embed_cache(1, rope_head_dim, bctx.position_id, cos_cache, sin_cache, rope_theta);
-            }
-
-            ncnn::Mat mask(bctx.kv_cache[0].first.h + 1, 1);
-            mask.fill(0.f);
-
-            ncnn::Mat decode_out;
-            {
-                ncnn::Extractor ex = decoder_net->create_extractor();
-                ex.input("in0", cur_embed);
-                ex.input("in1", mask);
-                ex.input("in2", cos_cache);
-                ex.input("in3", sin_cache);
-
-                for (int i = 0; i < attn_cnt; ++i) {
-                    char kname[16], vname[16];
-                    std::snprintf(kname, sizeof(kname), "cache_k%d", i);
-                    std::snprintf(vname, sizeof(vname), "cache_v%d", i);
-                    ex.input(kname, bctx.kv_cache[i].first);
-                    ex.input(vname, bctx.kv_cache[i].second);
-                }
-
-                for (int i = 0; i < attn_cnt; ++i) {
-                    char kname[32], vname[32];
-                    std::snprintf(kname, sizeof(kname), "out_cache_k%d", i);
-                    std::snprintf(vname, sizeof(vname), "out_cache_v%d", i);
-                    ncnn::Mat k_cache, v_cache;
-                    ex.extract(kname, k_cache);
-                    ex.extract(vname, v_cache);
-                    bctx.kv_cache[i] = { std::move(k_cache), std::move(v_cache) };
-                }
-                ex.extract("out0", decode_out);
-            }
-
-            ncnn::Mat logits_mat;
-            {
-                ncnn::Extractor ex = proj_out_net->create_extractor();
-                ex.input("in0", decode_out);
-                ex.extract("out0", logits_mat);
-            }
-
-            std::vector<float> logits(vocab_size);
-            memcpy(logits.data(), logits_mat.data, sizeof(float) * vocab_size);
-
-            for (int t : beam.tokens) {
-                if (logits[t] < 0) logits[t] *= cfg.repetition_penalty;
-                else logits[t] /= cfg.repetition_penalty;
-            }
-
-            softmax_vec(logits, cfg.temperature);
-
-            int K = std::min(cfg.beam_size, vocab_size);
-            std::vector<std::pair<float,int>> top;
-            top.reserve(vocab_size);
-            for (int i = 0; i < vocab_size; ++i) {
-                top.emplace_back(logits[i], i);
-            }
-            std::partial_sort(top.begin(), top.begin() + K, top.end(),
-                            [](auto& a, auto& b){ return a.first > b.first; });
-
-            for (int i = 0; i < K; ++i) {
-                int tok = top[i].second;
-                float p  = top[i].first;
-
-                Beam nb;
-                nb.ctx = clone_ctx(beam.ctx);
-                nb.ctx->position_id++;
-                nb.ctx->cur_token = tok;
-                
-                nb.prev_token = beam.ctx->cur_token;
-                nb.prev_in_tool_call = beam.in_tool_call;
-
-                nb.tokens = beam.tokens;
-                nb.tokens.insert(tok);
-                nb.token_history = beam.token_history;
-                nb.token_history.push_back(tok);
-                nb.token_in_tool_call = beam.token_in_tool_call;
-                nb.token_in_tool_call.push_back(beam.in_tool_call);
-                nb.score  = beam.score + std::log(p + 1e-9f);
-                nb.finished = (tok == eos);
-                nb.in_tool_call = beam.in_tool_call;
-                nb.tool_buffer = beam.tool_buffer;
-
-                if (tok == tool_call_id) {
-                    nb.in_tool_call = true;
-                } else if (tok == tool_call_end_id && nb.in_tool_call) {
-                    nb.in_tool_call = false;
-                    handle_tool(nb.tool_buffer, nb.ctx);
-                    nb.tool_buffer.clear();
-                    nb.tokens.clear();
-                    nb.tokens.insert(nb.ctx->cur_token);
-                    nb.finished = (nb.ctx->cur_token == eos);
-                    tool_completed = nb;
-                    has_tool_completed = true;
-                } else if (nb.in_tool_call) {
-                    nb.tool_buffer += bpe->decode({tok}, false);
-                }
-                candidates.push_back(std::move(nb));
-            }
-        }
-
-        if (has_tool_completed) {
-            beams.clear();
-            beams.push_back(tool_completed);
-            auto& b = beams[0];
-            if (!b.in_tool_call && b.ctx->cur_token != eos && b.ctx->cur_token != tool_call_id && b.ctx->cur_token != tool_call_end_id) {
-                callback(bpe->decode({b.ctx->cur_token}, false));
-            }
-            if (b.ctx->cur_token == eos || b.finished) break;
+        if (ctx->cur_token == tool_call_id) {
+            flag_in_tool_call = true;
+        } else if (ctx->cur_token == tool_call_end_id) {
+            flag_in_tool_call = false;
+            handle_tool(tool_call_content, ctx);
+            tool_call_content.clear();
+            history.clear();
+            history.insert(ctx->cur_token);
             continue;
+        } else if (flag_in_tool_call) {
+            tool_call_content += bpe->decode({ctx->cur_token}, false);
+        } else {
+            callback(bpe->decode({ctx->cur_token}, false));
         }
 
-        std::sort(candidates.begin(), candidates.end(), [](const Beam& a, const Beam& b) { return a.score > b.score; });
-
-        int best_tool_idx = -1;
-        for (int i = 0; i < (int)candidates.size(); ++i) {
-            if (candidates[i].in_tool_call || !candidates[i].tool_buffer.empty()) {
-                best_tool_idx = i;
-                break;
-            }
+        ncnn::Mat cur_token_mat = ncnn::Mat(1, 1, (void*)&ctx->cur_token).clone();
+        ncnn::Mat cur_embed;
+        {
+            ncnn::Extractor ex = embed_net->create_extractor();
+            ex.input("in0", cur_token_mat);
+            ex.extract("out0", cur_embed);
         }
 
-        std::vector<Beam> next_beams;
-        next_beams.reserve(cfg.beam_size);
-        for (int i = 0; i < (int)candidates.size() && (int)next_beams.size() < cfg.beam_size; ++i) {
-            next_beams.push_back(candidates[i]);
+        ncnn::Mat cos_cache, sin_cache;
+        if (rope_type == RoPE_Type::LongRoPE) {
+            generate_rope_embed_cache_LongRoPE(1, rope_head_dim, ctx->position_id, cos_cache, sin_cache, rope_theta, short_factor.data(), long_factor.data(), original_max_position_embeddings);
+        } else if (rope_type == RoPE_Type::NTK_RoPE) {
+            generate_ntk_rope_embed_cache(1, rope_head_dim, ctx->position_id, cos_cache, sin_cache, rope_theta, ntk_scaling_params);
+        } else if (rope_type == RoPE_Type::YARN_RoPE) {
+            generate_yarn_rope_embed_cache(1, rope_head_dim, ctx->position_id, cos_cache, sin_cache, rope_theta, ntk_scaling_params);
         }
-
-        if (best_tool_idx >= 0 && best_tool_idx >= (int)next_beams.size()) {
-            if ((int)next_beams.size() < cfg.beam_size) {
-                next_beams.push_back(candidates[best_tool_idx]);
-            } else {
-                next_beams.back() = candidates[best_tool_idx];
-            }
+        else {
+            generate_rope_embed_cache(1, rope_head_dim, ctx->position_id, cos_cache, sin_cache, rope_theta);
         }
-
-        int promote_idx = -1;
-        for (int i = 0; i < (int)next_beams.size(); ++i) {
-            if (next_beams[i].in_tool_call || !next_beams[i].tool_buffer.empty()) {
-                promote_idx = i;
-                break;
-            }
-        }
-        if (promote_idx > 0) {
-            std::swap(next_beams[0], next_beams[promote_idx]);
-        }
-
-        beams = std::move(next_beams);
-        auto& best = beams[0];
-
-        // Real-time output: emit tokens that are confirmed across all beams
-        // Find the minimum token_history length across all beams
-        size_t min_history = best.token_history.size();
-        for (const auto& b : beams) {
-            min_history = std::min(min_history, b.token_history.size());
-        }
-
-        // Emit new tokens from the best beam up to min_history
-        // These tokens are "confirmed" because all beams have them
-        while (emitted_count < min_history) {
-            int tok = best.token_history[emitted_count];
-            bool in_tool = best.token_in_tool_call[emitted_count];
-            // Output all tokens except:
-            // - eos
-            // - tool_call_id, tool_call_end_id (and content in between)
-            // - think_id, think_end_id are NOT filtered (they should be output)
-            if (tok != eos && tok != tool_call_id && tok != tool_call_end_id && !in_tool) {
-                callback(bpe->decode({tok}, false));
-            }
-            emitted_count++;
-        }
-
-        if (best.ctx->cur_token == eos || best.finished) break;
         
-        bool all_finished = true;
-        for (auto& b : beams) {
-            if (!b.finished) { all_finished = false; break; }
+        ctx->position_id++;
+
+        ncnn::Mat mask(ctx->kv_cache[0].first.h + 1, 1);
+        mask.fill(0.f);
+
+        ncnn::Mat decode_out;
+        {
+            ncnn::Extractor ex = decoder_net->create_extractor();
+            ex.input("in0", cur_embed);
+            ex.input("in1", mask);
+            ex.input("in2", cos_cache);
+            ex.input("in3", sin_cache);
+
+            for (int i = 0; i < attn_cnt; ++i) {
+                char kname[16], vname[16];
+                std::snprintf(kname, sizeof(kname), "cache_k%d", i);
+                std::snprintf(vname, sizeof(vname), "cache_v%d", i);
+                ex.input(kname, ctx->kv_cache[i].first);
+                ex.input(vname, ctx->kv_cache[i].second);
+            }
+
+            for (int i = 0; i < attn_cnt; ++i) {
+                char kname[32], vname[32];
+                std::snprintf(kname, sizeof(kname), "out_cache_k%d", i);
+                std::snprintf(vname, sizeof(vname), "out_cache_v%d", i);
+                ncnn::Mat k_cache, v_cache;
+                ex.extract(kname, k_cache);
+                ex.extract(vname, v_cache);
+                ctx->kv_cache[i] = { std::move(k_cache), std::move(v_cache) };
+            }
+            ex.extract("out0", decode_out);
         }
-        if (all_finished) break;
-    }
 
-    auto best_it = std::max_element(beams.begin(), beams.end(), [](const Beam& a, const Beam& b) { return a.score < b.score; });
-
-    // Output any remaining tokens that haven't been emitted yet
-    for (size_t i = emitted_count; i < best_it->token_history.size(); ++i) {
-        int tok = best_it->token_history[i];
-        bool in_tool = best_it->token_in_tool_call[i];
-        if (tok != eos && tok != tool_call_id && tok != tool_call_end_id && !in_tool) {
-            callback(bpe->decode({tok}, false));
+        ncnn::Mat logits_mat;
+        {
+            ncnn::Extractor ex = proj_out_net->create_extractor();
+            ex.input("in0", decode_out);
+            ex.extract("out0", logits_mat);
         }
-    }
 
-    return best_it->ctx;
+        std::vector<float> logits(vocab_size);
+        memcpy(logits.data(), logits_mat.data, sizeof(float) * vocab_size);
+
+        for (int t : history) {
+            if (logits[t] < 0) logits[t] *= cfg.repetition_penalty;
+            else logits[t] /= cfg.repetition_penalty;
+        }
+
+        softmax_vec(logits, cfg.temperature);
+        if (cfg.top_k > 0) apply_top_k(logits, cfg.top_k);
+        if (cfg.top_p < 1.0f) apply_top_p(logits, cfg.top_p);
+
+        int next_id;
+        if (cfg.do_sample == 1) {
+            next_id = sample_from_probs(logits);
+        } else {
+            next_id = std::max_element(logits.begin(), logits.end()) - logits.begin();
+        }
+
+        ctx->cur_token = next_id;
+        history.insert(next_id);
+    }
+    return ctx;
 }
 
 std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::define_tools(const std::shared_ptr<ncnn_llm_gpt_ctx>& ctx, const std::vector<nlohmann::json>& tools, const std::string& system_prompt) {

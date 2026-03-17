@@ -85,7 +85,6 @@ int run_cli(const Options& opt,
 
         std::cout << "Assistant: ";
         GenerateConfig cfg;
-        cfg.beam_size = 2;
         cfg.top_k = 40;
         cfg.top_p = 0.9f;
         cfg.temperature = 0.7f;
