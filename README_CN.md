@@ -27,8 +27,9 @@ ncnn 是一个为移动端和嵌入式设备深度优化的高性能神经网络
 
 *这些模型可以使用已实现的分词器和推理流程顺利运行。*
 
-* **MiniCPM4-0.5B**
-* **Qwen3** (0.6B)
+* **MiniCPM4**
+* **Qwen3**
+* **Qwen3.5**
 * **Qwen2.5-VL**
 * **NLLB** (No Language Left Behind)
 
@@ -42,7 +43,6 @@ ncnn 是一个为移动端和嵌入式设备深度优化的高性能神经网络
 
 *这些模型理论上可以工作，但在当前版本中仍失败或未验证。*
 
-* Qwen3-VL-2B-Instruct
 * TinyLlama-1.1B-Chat-v1.0
 * Qwen2.5-0.5B
 * Llama-3.2-1B-Instruct
@@ -58,42 +58,54 @@ ncnn 是一个为移动端和嵌入式设备深度优化的高性能神经网络
 
 本项目使用 `xmake` 构建。
 
+### 依赖项
+
+- **xmake** - 构建系统
+- **ncnn** (master 分支) - 神经网络推理框架
+- **OpenCV** (可选) - 用于视觉语言模型支持
+- **nlohmann_json** - JSON 库
+
 ### 1. 克隆仓库
 
 ```bash
 git clone https://github.com/futz12/ncnn_llm.git
 cd ncnn_llm
-
 ```
 
 ### 2. 构建
 
 ```bash
 xmake build
-
 ```
 
-### 3. 运行（示例：MiniCPM4）
+### 3. 运行（示例：llm_ncnn_run）
 
 运行前请确保已下载模型权重（见下文）。
 
 ```bash
-xmake run minicpm4_main
-
+xmake run llm_ncnn_run --model ./assets/qwen3_0.6b
 ```
+
+### 命令行选项
+
+| 选项 | 描述 |
+|------|------|
+| `--model` | 模型目录路径（必需） |
+| `--threads` | 线程数（默认：自动） |
+| `--vulkan` | 启用 Vulkan GPU 加速 |
+| `--vulkan-device` | 指定 Vulkan 设备 ID |
+| `--image` | 图像文件路径（用于 VL 模型） |
+| `--builtin-tools` | 启用内置工具 |
 
 ### 示例输出
 
 ```text
- * Executing task: xmake run minicpm4_main 
-
-Chat with MiniCPM4-0.5B! Type 'exit' or 'quit' to end the conversation.
+Chat with Qwen3-0.6B! Type 'exit' or 'quit' to end the conversation.
 User: Hello
 Assistant: 
-Hello, I am your intelligent assistant. I can help you check the weather, news, music, translation, etc. Is there anything you need help with?
-User: Do you know what OpenCV is?
-Assistant: OpenCV (Open Source Computer Vision Library) is an open-source computer vision and machine learning software library. It contains many algorithms and tools for image and video processing...
-
+Hello! How can I assist you today?
+User: What is OpenCV?
+Assistant: OpenCV (Open Source Computer Vision Library) is an open-source computer vision and machine learning software library...
 ```
 
 ---
@@ -103,6 +115,7 @@ Assistant: OpenCV (Open Source Computer Vision Library) is an open-source comput
 `llm_ncnn_run` 是一个统一示例，支持：
 - CLI 对话模式
 - 内置工具（random/add）
+- 视觉语言模型支持（需要 OpenCV）
 
 ### 构建
 
@@ -119,6 +132,77 @@ xmake run llm_ncnn_run --model ./assets/qwen3_0.6b
 说明：
 - 模型路径必须是包含模型文件的有效目录。
 - 从 https://mirrors.sdu.edu.cn/ncnn_modelzoo/ 下载模型
+
+---
+
+## 📊 性能测试
+
+项目包含性能测试工具。
+
+### 构建
+
+```bash
+xmake build benchllm
+```
+
+### 运行
+
+```bash
+xmake run benchllm [loop_count] [num_threads] [powersave] [gpu_device] [cooling_down] [seqlen]
+```
+
+### 参数说明
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `loop_count` | 4 | 基准测试迭代次数 |
+| `num_threads` | 自动 | CPU 线程数 |
+| `powersave` | 2 | CPU 省电模式 (0-2) |
+| `gpu_device` | -1 | Vulkan 设备 ID（-1 表示仅 CPU） |
+| `cooling_down` | 1 | 测试间启用冷却 |
+| `seqlen` | 233 | 基准测试序列长度 |
+
+---
+
+## 🧪 测试
+
+项目包含单元测试。
+
+### 构建并运行测试
+
+```bash
+xmake build test_llm
+xmake run test_llm
+```
+
+---
+
+## 📁 项目结构
+
+```
+ncnn_llm/
+├── src/                    # 核心库源码
+│   ├── ncnn_llm_gpt.cpp    # 主 LLM 推理实现
+│   ├── sampling.cpp        # Token 采样策略
+│   ├── nllb_600m.cpp       # NLLB 模型支持
+│   └── utils/              # 工具模块
+│       ├── tokenizer/      # 分词器实现 (BPE, Unigram)
+│       ├── gdr.cpp         # GDR 支持
+│       ├── prompt.cpp      # Prompt 处理
+│       └── rope_embed.cpp  # RoPE 嵌入
+├── examples/               # 示例应用
+│   ├── llm_ncnn_run/       # 统一 CLI 运行器
+│   ├── bytelevelbpe_main.cpp
+│   ├── nllb_main.cpp
+│   └── unigram_main.cpp
+├── benchmark/              # 性能基准测试
+│   └── benchllm.cpp
+├── tests/                  # 单元测试
+│   └── test_llm.cpp
+├── export/                 # 模型导出脚本
+│   └── nllb_export.py
+└── xmake.lua              # 构建配置
+```
 
 ---
 
