@@ -127,6 +127,92 @@ void generate_rope_embed_cache(int seqlen, int embed_dim, int position_id, ncnn:
     }
 }
 
+void generate_rope_embed_cache_vision_mrope_interleaved(int seqlen,
+                                                        int embed_dim,
+                                                        int position_id,
+                                                        int image_pad_index,
+                                                        int image_embeds_size,
+                                                        int num_patches_w,
+                                                        ncnn::Mat& cos_cache,
+                                                        ncnn::Mat& sin_cache,
+                                                        float rope_theta)
+{
+    const int merge_size = 2;
+    const int mrope[3] = {11, 11, 10};
+    const float partial_rotary_factor = 0.5f;
+    const int rotate_dim = embed_dim * partial_rotary_factor;
+
+    std::vector<float> inv_freq(rotate_dim / 2);
+    for (int i = 0; i < rotate_dim / 2; i++)
+    {
+        inv_freq[i] = 1.f / powf(rope_theta, (float)(i * 2) / rotate_dim);
+    }
+
+    cos_cache.create(embed_dim / 2, seqlen);
+    sin_cache.create(embed_dim / 2, seqlen);
+
+    for (int i = 0; i < seqlen; i++)
+    {
+        float* cos_ptr = cos_cache.row(i);
+        float* sin_ptr = sin_cache.row(i);
+
+        for (int j = 0; j < embed_dim / 2; j++)
+        {
+            if (j < rotate_dim / 2)
+            {
+                int pos = position_id;
+                if (i < image_pad_index)
+                {
+                    pos += i;
+                }
+                else if (i >= image_pad_index + image_embeds_size)
+                {
+                    pos += i - image_embeds_size + (num_patches_w / merge_size);
+                }
+                else
+                {
+                    int which_pos = 0;
+
+                    if (j < mrope[1] * 3 && (j % 3 == 1))
+                    {
+                        which_pos = 1;
+                    }
+                    else if (j < mrope[2] * 3 && (j % 3 == 2))
+                    {
+                        which_pos = 2;
+                    }
+
+                    if (which_pos == 0)
+                    {
+                        pos += image_pad_index;
+                    }
+                    else if (which_pos == 1)
+                    {
+                        int hid = (i - image_pad_index) / (num_patches_w / merge_size);
+                        pos += image_pad_index + hid;
+                    }
+                    else
+                    {
+                        int wid = (i - image_pad_index) % (num_patches_w / merge_size);
+                        pos += image_pad_index + wid;
+                    }
+                }
+
+                const float t = pos * inv_freq[j];
+                const float cos_val = cosf(t);
+                const float sin_val = sinf(t);
+                *cos_ptr++ = cos_val;
+                *sin_ptr++ = sin_val;
+            }
+            else
+            {
+                *cos_ptr++ = 1.0f;
+                *sin_ptr++ = 0.0f;
+            }
+        }
+    }
+}
+
 static inline float compute_scaling_factor(int max_position_embeddings, int ORIGINAL_MAX_POSITION_EMBEDDINGS = 32768) {
     float scale = static_cast<float>(max_position_embeddings) / static_cast<float>(ORIGINAL_MAX_POSITION_EMBEDDINGS);
     return std::sqrt(1.0f + std::log(scale) / std::log(static_cast<float>(ORIGINAL_MAX_POSITION_EMBEDDINGS)));

@@ -27,8 +27,9 @@ The project is currently in active development. Below is the current compatibili
 
 *These models run smoothly with the implemented tokenizer and inference pipeline.*
 
-* **MiniCPM4-0.5B**
-* **Qwen3** (0.6B)
+* **MiniCPM4**
+* **Qwen3**
+* **Qwen3.5**
 * **Qwen2.5-VL**
 * **NLLB** (No Language Left Behind)
 
@@ -42,7 +43,6 @@ The project is currently in active development. Below is the current compatibili
 
 *These models should theoretically work but are currently failing or unverified in the current build.*
 
-* Qwen3-VL-2B-Instruct
 * TinyLlama-1.1B-Chat-v1.0
 * Qwen2.5-0.5B
 * Llama-3.2-1B-Instruct
@@ -58,42 +58,54 @@ The project is currently in active development. Below is the current compatibili
 
 This project uses `xmake` for building.
 
+### Prerequisites
+
+- **xmake** - Build system
+- **ncnn** (master branch) - Neural network inference framework
+- **OpenCV** (optional) - For vision-language model support
+- **nlohmann_json** - JSON library
+
 ### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/futz12/ncnn_llm.git
 cd ncnn_llm
-
 ```
 
 ### 2. Build
 
 ```bash
 xmake build
-
 ```
 
-### 3. Run (Example: MiniCPM4)
+### 3. Run (Example: llm_ncnn_run)
 
 Ensure you have downloaded the model weights (see below) before running.
 
 ```bash
-xmake run minicpm4_main
-
+xmake run llm_ncnn_run --model ./assets/qwen3_0.6b
 ```
+
+### Command Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--model` | Path to model directory (required) |
+| `--threads` | Number of threads (default: auto) |
+| `--vulkan` | Enable Vulkan GPU acceleration |
+| `--vulkan-device` | Specify Vulkan device ID |
+| `--image` | Path to image file (for VL models) |
+| `--builtin-tools` | Enable built-in tools |
 
 ### Example Output
 
 ```text
- * Executing task: xmake run minicpm4_main 
-
-Chat with MiniCPM4-0.5B! Type 'exit' or 'quit' to end the conversation.
+Chat with Qwen3-0.6B! Type 'exit' or 'quit' to end the conversation.
 User: Hello
 Assistant: 
-Hello, I am your intelligent assistant. I can help you check the weather, news, music, translation, etc. Is there anything you need help with?
-User: Do you know what OpenCV is?
-Assistant: OpenCV (Open Source Computer Vision Library) is an open-source computer vision and machine learning software library. It contains many algorithms and tools for image and video processing...
-
+Hello! How can I assist you today?
+User: What is OpenCV?
+Assistant: OpenCV (Open Source Computer Vision Library) is an open-source computer vision and machine learning software library...
 ```
 
 ---
@@ -103,6 +115,7 @@ Assistant: OpenCV (Open Source Computer Vision Library) is an open-source comput
 `llm_ncnn_run` is a unified example that supports:
 - CLI chat mode
 - Built-in tools (random/add)
+- Vision-language model support (with OpenCV)
 
 ### Build
 
@@ -119,6 +132,77 @@ xmake run llm_ncnn_run --model ./assets/qwen3_0.6b
 Notes:
 - Model path must be a valid directory containing model files.
 - Download models from https://mirrors.sdu.edu.cn/ncnn_modelzoo/
+
+---
+
+## 📊 Benchmark
+
+The project includes a benchmark tool for performance testing.
+
+### Build
+
+```bash
+xmake build benchllm
+```
+
+### Run
+
+```bash
+xmake run benchllm [loop_count] [num_threads] [powersave] [gpu_device] [cooling_down] [seqlen]
+```
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `loop_count` | 4 | Number of benchmark iterations |
+| `num_threads` | auto | Number of CPU threads |
+| `powersave` | 2 | CPU powersave mode (0-2) |
+| `gpu_device` | -1 | Vulkan device ID (-1 for CPU only) |
+| `cooling_down` | 1 | Enable cooling down between tests |
+| `seqlen` | 233 | Sequence length for benchmark |
+
+---
+
+## 🧪 Testing
+
+The project includes unit tests.
+
+### Build and Run Tests
+
+```bash
+xmake build test_llm
+xmake run test_llm
+```
+
+---
+
+## 📁 Project Structure
+
+```
+ncnn_llm/
+├── src/                    # Core library source
+│   ├── ncnn_llm_gpt.cpp    # Main LLM inference implementation
+│   ├── sampling.cpp        # Token sampling strategies
+│   ├── nllb_600m.cpp       # NLLB model support
+│   └── utils/              # Utility modules
+│       ├── tokenizer/      # Tokenizer implementations (BPE, Unigram)
+│       ├── gdr.cpp         # GDR support
+│       ├── prompt.cpp      # Prompt handling
+│       └── rope_embed.cpp  # RoPE embedding
+├── examples/               # Example applications
+│   ├── llm_ncnn_run/       # Unified CLI runner
+│   ├── bytelevelbpe_main.cpp
+│   ├── nllb_main.cpp
+│   └── unigram_main.cpp
+├── benchmark/              # Performance benchmarks
+│   └── benchllm.cpp
+├── tests/                  # Unit tests
+│   └── test_llm.cpp
+├── export/                 # Model export scripts
+│   └── nllb_export.py
+└── xmake.lua              # Build configuration
+```
 
 ---
 

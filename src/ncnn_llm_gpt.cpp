@@ -2,20 +2,20 @@
 #include "sampling.h"
 
 static std::shared_ptr<ncnn_llm_gpt_ctx> clone_ctx(const std::shared_ptr<ncnn_llm_gpt_ctx>& src) {
-    auto dst = std::make_shared<ncnn_llm_gpt_ctx>();
-    dst->cur_token = src->cur_token;
-    dst->position_id = src->position_id;
-    dst->kv_cache.resize(src->kv_cache.size());
-    for (size_t i = 0; i < src->kv_cache.size(); ++i) {
-        dst->kv_cache[i].first = src->kv_cache[i].first.clone();
-        dst->kv_cache[i].second = src->kv_cache[i].second.clone();
+    return src->clone();
+}
+
+static std::shared_ptr<ncnn_llm_gpt_ctx> create_ctx(int sconv_cnt, int gdr_cnt) {
+    if (sconv_cnt > 0 || gdr_cnt > 0) {
+        return std::make_shared<qwen3_5_ctx>();
     }
-    return dst;
+    return std::make_shared<ncnn_llm_gpt_base_ctx>();
 }
 
 // Class Implementation
 
-ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int num_threads, int vulkan_device) {
+ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int num_threads, int vulkan_device) 
+    : vision_type(Vision_Type::VISION_CLOSE) {
     try {
         json config;
         {
@@ -69,6 +69,8 @@ ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int n
         printf("  proj_out param: %s\n", proj_out_param.c_str());
         printf("  proj_out bin: %s\n", proj_out_bin.c_str());
 
+        register_gdr_layers(*decoder_net);
+
         decoder_net->load_param(decoder_param.c_str());
         decoder_net->load_model(decoder_bin.c_str());
         embed_net->load_param(embed_param.c_str());
@@ -102,6 +104,12 @@ ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int n
         // Model settings
         if (config["setting"].contains("attn_cnt")) {
             attn_cnt = config["setting"]["attn_cnt"].get<int>();
+        }
+        if (config["setting"].contains("sconv_cnt")) {
+            sconv_cnt = config["setting"]["sconv_cnt"].get<int>();
+        }
+        if (config["setting"].contains("gdr_cnt")) {
+            gdr_cnt = config["setting"]["gdr_cnt"].get<int>();
         }
 
         if (config["setting"].contains("rope")) {
@@ -163,12 +171,18 @@ ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int n
         }
 
         // Vision settings
-        std::string vision_type = "close";
+        std::string vision_type_str = "close";
         if (config["setting"].contains("vision")) {
             auto vision_cfg = config["setting"]["vision"];
-            vision_type = vision_cfg["type"].get<std::string>();
+            vision_type_str = vision_cfg["type"].get<std::string>();
             
-            if (vision_type != "close") {
+            if (vision_type_str != "close") {
+                if (vision_type_str == "vit") {
+                    vision_type = Vision_Type::VISION_VIT;
+                } else if (vision_type_str == "qwen3.5_vl") {
+                    vision_type = Vision_Type::VISION_QWEN3_5_VL;
+                }
+                
                 std::string vision_embed_patch_param = model_path + "/" + vision_cfg["vision_embed_patch_param"].get<std::string>();
                 std::string vision_embed_patch_bin = model_path + "/" + vision_cfg["vision_embed_patch_bin"].get<std::string>();
                 std::string vision_encoder_param = model_path + "/" + vision_cfg["vision_encoder_param"].get<std::string>();
@@ -191,6 +205,20 @@ ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int n
                 vision_encoder->load_param(vision_encoder_param.c_str());
                 vision_encoder->load_model(vision_encoder_bin.c_str());
 
+                if (vision_cfg.contains("vision_embed_pos_param")) {
+                    std::string vision_embed_pos_param = model_path + "/" + vision_cfg["vision_embed_pos_param"].get<std::string>();
+                    std::string vision_embed_pos_bin = model_path + "/" + vision_cfg["vision_embed_pos_bin"].get<std::string>();
+                    fprintf(stderr, "  vision embed pos param: %s\n", vision_embed_pos_param.c_str());
+                    fprintf(stderr, "  vision embed pos bin: %s\n", vision_embed_pos_bin.c_str());
+                    
+                    vision_embed_pos = std::make_shared<ncnn::Net>();
+                    if (use_vulkan) {
+                        vision_embed_pos->opt.use_vulkan_compute = true;
+                    }
+                    vision_embed_pos->load_param(vision_embed_pos_param.c_str());
+                    vision_embed_pos->load_model(vision_embed_pos_bin.c_str());
+                }
+
                 auto it = bpe->token_to_id().find("<|image_pad|>");
                 if (it != bpe->token_to_id().end()) {
                     image_pad_id = it->second;
@@ -202,10 +230,12 @@ ncnn_llm_gpt::ncnn_llm_gpt(const std::string& model_path, bool use_vulkan, int n
                 max_num_patches = vision_cfg["max_num_patches"].get<int>();
                 spatial_merge_size = vision_cfg["spatial_merge_size"].get<int>();
 
-                auto rope_cfg = vision_cfg["rope"];
-                if (rope_cfg["type"] == "mRoPE") {
-                    vision_rope_type = VisionRoPE_Type::mRoPE;
-                    mrope_section = rope_cfg["mrope_section"].get<std::vector<int>>();
+                if (vision_cfg.contains("rope")) {
+                    auto rope_cfg = vision_cfg["rope"];
+                    if (rope_cfg["type"] == "mRoPE") {
+                        vision_rope_type = VisionRoPE_Type::mRoPE;
+                        mrope_section = rope_cfg["mrope_section"].get<std::vector<int>>();
+                    }
                 }
             }
         }
@@ -252,6 +282,8 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
     }
 
     std::vector<std::pair<ncnn::Mat, ncnn::Mat>> kv_cache;
+    std::vector<ncnn::Mat> sconv_cache;
+    std::vector<ncnn::Mat> gdr_cache;
     ncnn::Mat decode_out;
     {
         ncnn::Extractor ex = decoder_net->create_extractor();
@@ -268,6 +300,22 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.extract(name_k_out, k_cache);
             ex.extract(name_v_out, v_cache);
             kv_cache.emplace_back(std::move(k_cache), std::move(v_cache));
+        }
+
+        for (int i = 0; i < sconv_cnt; i++) {
+            char name_out[32];
+            std::snprintf(name_out, sizeof(name_out), "out_cache_conv%d", i);
+            ncnn::Mat cache;
+            ex.extract(name_out, cache);
+            sconv_cache.emplace_back(std::move(cache));
+        }
+
+        for (int i = 0; i < gdr_cnt; i++) {
+            char name_out[32];
+            std::snprintf(name_out, sizeof(name_out), "out_cache_gdr%d", i);
+            ncnn::Mat cache;
+            ex.extract(name_out, cache);
+            gdr_cache.emplace_back(std::move(cache));
         }
     }
 
@@ -310,6 +358,18 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.input(name_v_in, kv_cache[i].second);
         }
 
+        for (int i = 0; i < sconv_cnt; i++) {
+            char name_in[16];
+            std::snprintf(name_in, sizeof(name_in), "cache_conv%d", i);
+            ex.input(name_in, sconv_cache[i]);
+        }
+
+        for (int i = 0; i < gdr_cnt; i++) {
+            char name_in[16];
+            std::snprintf(name_in, sizeof(name_in), "cache_gdr%d", i);
+            ex.input(name_in, gdr_cache[i]);
+        }
+
         for (int i = 0; i < attn_cnt; i++) {
             char name_k_out[32], name_v_out[32];
             std::snprintf(name_k_out, sizeof(name_k_out), "out_cache_k%d", i);
@@ -318,6 +378,22 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.extract(name_k_out, k_cache);
             ex.extract(name_v_out, v_cache);
             kv_cache[i] = std::make_pair(std::move(k_cache), std::move(v_cache));
+        }
+
+        for (int i = 0; i < sconv_cnt; i++) {
+            char name_out[32];
+            std::snprintf(name_out, sizeof(name_out), "out_cache_conv%d", i);
+            ncnn::Mat cache;
+            ex.extract(name_out, cache);
+            sconv_cache[i] = std::move(cache);
+        }
+
+        for (int i = 0; i < gdr_cnt; i++) {
+            char name_out[32];
+            std::snprintf(name_out, sizeof(name_out), "out_cache_gdr%d", i);
+            ncnn::Mat cache;
+            ex.extract(name_out, cache);
+            gdr_cache[i] = std::move(cache);
         }
 
         ex.extract("out0", decode_out);
@@ -342,10 +418,19 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
         }
     }
 
-    auto ctx = std::make_shared<ncnn_llm_gpt_ctx>();
+    auto ctx = create_ctx(sconv_cnt, gdr_cnt);
     ctx->kv_cache = std::move(kv_cache);
     ctx->cur_token = next_token_id;
     ctx->position_id = (int)token_ids.size() + 1;
+    
+    if (sconv_cnt > 0 || gdr_cnt > 0) {
+        auto qwen_ctx = std::dynamic_pointer_cast<qwen3_5_ctx>(ctx);
+        if (qwen_ctx) {
+            qwen_ctx->sconv_cache = std::move(sconv_cache);
+            qwen_ctx->gdr_cache = std::move(gdr_cache);
+        }
+    }
+    
     return ctx;
 }
 
@@ -380,7 +465,11 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
         generate_rope_embed_cache(token_ids.size(), rope_head_dim, new_ctx->position_id, cos_cache, sin_cache, rope_theta);
         new_ctx->position_id += token_ids.size();
     } else {
-        generate_rope_embed_cache_vision_mrope(token_ids.size(), rope_head_dim, new_ctx->position_id, image_pad_index, image_embeds_size, num_patches_w, spatial_merge_size, mrope_section, cos_cache, sin_cache, rope_theta);
+        if (vision_type == Vision_Type::VISION_QWEN3_5_VL) {
+            generate_rope_embed_cache_vision_mrope_interleaved(token_ids.size(), rope_head_dim, new_ctx->position_id, image_pad_index, image_embeds_size, num_patches_w, cos_cache, sin_cache, rope_theta);
+        } else {
+            generate_rope_embed_cache_vision_mrope(token_ids.size(), rope_head_dim, new_ctx->position_id, image_pad_index, image_embeds_size, num_patches_w, spatial_merge_size, mrope_section, cos_cache, sin_cache, rope_theta);
+        }
         new_ctx->position_id += token_ids.size() - image_embeds_size + (num_patches_w / spatial_merge_size);
     }
 
@@ -409,6 +498,20 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.input(vname, new_ctx->kv_cache[i].second);
         }
 
+        auto qwen_ctx = std::dynamic_pointer_cast<qwen3_5_ctx>(new_ctx);
+        if (qwen_ctx) {
+            for (int i = 0; i < sconv_cnt; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "cache_conv%d", i);
+                ex.input(name, qwen_ctx->sconv_cache[i]);
+            }
+            for (int i = 0; i < gdr_cnt; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "cache_gdr%d", i);
+                ex.input(name, qwen_ctx->gdr_cache[i]);
+            }
+        }
+
         for (int i = 0; i < attn_cnt; i++) {
             char kname[32], vname[32];
             std::snprintf(kname, sizeof(kname), "out_cache_k%d", i);
@@ -417,6 +520,23 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.extract(kname, k_cache);
             ex.extract(vname, v_cache);
             new_ctx->kv_cache[i] = std::make_pair(std::move(k_cache), std::move(v_cache));
+        }
+
+        if (qwen_ctx) {
+            for (int i = 0; i < sconv_cnt; ++i) {
+                char name[32];
+                std::snprintf(name, sizeof(name), "out_cache_conv%d", i);
+                ncnn::Mat cache;
+                ex.extract(name, cache);
+                qwen_ctx->sconv_cache[i] = std::move(cache);
+            }
+            for (int i = 0; i < gdr_cnt; ++i) {
+                char name[32];
+                std::snprintf(name, sizeof(name), "out_cache_gdr%d", i);
+                ncnn::Mat cache;
+                ex.extract(name, cache);
+                qwen_ctx->gdr_cache[i] = std::move(cache);
+            }
         }
     }
 
@@ -450,6 +570,20 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.input(vname, new_ctx->kv_cache[i].second);
         }
 
+        auto qwen_ctx = std::dynamic_pointer_cast<qwen3_5_ctx>(new_ctx);
+        if (qwen_ctx) {
+            for (int i = 0; i < sconv_cnt; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "cache_conv%d", i);
+                ex.input(name, qwen_ctx->sconv_cache[i]);
+            }
+            for (int i = 0; i < gdr_cnt; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "cache_gdr%d", i);
+                ex.input(name, qwen_ctx->gdr_cache[i]);
+            }
+        }
+
         for (int i = 0; i < attn_cnt; i++) {
             char kname[32], vname[32];
             std::snprintf(kname, sizeof(kname), "out_cache_k%d", i);
@@ -459,6 +593,24 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.extract(vname, v_cache);
             new_ctx->kv_cache[i] = std::make_pair(std::move(k_cache), std::move(v_cache));
         }
+
+        if (qwen_ctx) {
+            for (int i = 0; i < sconv_cnt; ++i) {
+                char name[32];
+                std::snprintf(name, sizeof(name), "out_cache_conv%d", i);
+                ncnn::Mat cache;
+                ex.extract(name, cache);
+                qwen_ctx->sconv_cache[i] = std::move(cache);
+            }
+            for (int i = 0; i < gdr_cnt; ++i) {
+                char name[32];
+                std::snprintf(name, sizeof(name), "out_cache_gdr%d", i);
+                ncnn::Mat cache;
+                ex.extract(name, cache);
+                qwen_ctx->gdr_cache[i] = std::move(cache);
+            }
+        }
+
         ex.extract("out0", decode_out);
     }
 
@@ -510,6 +662,7 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
     else {
         generate_rope_embed_cache(token_ids.size(), rope_head_dim, current_pos, cos_cache, sin_cache, rope_theta);
     }
+    new_ctx->position_id += token_ids.size();
     
     ncnn::Mat input_ids_mat = ncnn::Mat((int)token_ids.size(), 1, (void*)token_ids.data()).clone();
     ncnn::Mat token_embed;
@@ -544,6 +697,20 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.input(vname, new_ctx->kv_cache[i].second);
         }
 
+        auto qwen_ctx = std::dynamic_pointer_cast<qwen3_5_ctx>(new_ctx);
+        if (qwen_ctx) {
+            for (int i = 0; i < sconv_cnt; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "cache_conv%d", i);
+                ex.input(name, qwen_ctx->sconv_cache[i]);
+            }
+            for (int i = 0; i < gdr_cnt; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "cache_gdr%d", i);
+                ex.input(name, qwen_ctx->gdr_cache[i]);
+            }
+        }
+
         for (int i = 0; i < attn_cnt; i++) {
             char kname[32], vname[32];
             std::snprintf(kname, sizeof(kname), "out_cache_k%d", i);
@@ -552,6 +719,23 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.extract(kname, k_cache);
             ex.extract(vname, v_cache);
             new_ctx->kv_cache[i] = std::make_pair(std::move(k_cache), std::move(v_cache));
+        }
+
+        if (qwen_ctx) {
+            for (int i = 0; i < sconv_cnt; ++i) {
+                char name[32];
+                std::snprintf(name, sizeof(name), "out_cache_conv%d", i);
+                ncnn::Mat cache;
+                ex.extract(name, cache);
+                qwen_ctx->sconv_cache[i] = std::move(cache);
+            }
+            for (int i = 0; i < gdr_cnt; ++i) {
+                char name[32];
+                std::snprintf(name, sizeof(name), "out_cache_gdr%d", i);
+                ncnn::Mat cache;
+                ex.extract(name, cache);
+                qwen_ctx->gdr_cache[i] = std::move(cache);
+            }
         }
     }
 
@@ -564,18 +748,18 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
     }
     
     ncnn::Mat last_cos_cache, last_sin_cache;
-    int last_token_pos = current_pos + (int)token_ids.size();
 
     if (rope_type == RoPE_Type::LongRoPE) {
-        generate_rope_embed_cache_LongRoPE(1, rope_head_dim, last_token_pos, last_cos_cache, last_sin_cache, rope_theta, short_factor.data(), long_factor.data(), original_max_position_embeddings);
+        generate_rope_embed_cache_LongRoPE(1, rope_head_dim, new_ctx->position_id, last_cos_cache, last_sin_cache, rope_theta, short_factor.data(), long_factor.data(), original_max_position_embeddings);
     } else if (rope_type == RoPE_Type::NTK_RoPE) {
-        generate_ntk_rope_embed_cache(1, rope_head_dim, last_token_pos, last_cos_cache, last_sin_cache, rope_theta, ntk_scaling_params);
+        generate_ntk_rope_embed_cache(1, rope_head_dim, new_ctx->position_id, last_cos_cache, last_sin_cache, rope_theta, ntk_scaling_params);
     } else if (rope_type == RoPE_Type::YARN_RoPE) {
-        generate_yarn_rope_embed_cache(1, rope_head_dim, last_token_pos, last_cos_cache, last_sin_cache, rope_theta, ntk_scaling_params);
+        generate_yarn_rope_embed_cache(1, rope_head_dim, new_ctx->position_id, last_cos_cache, last_sin_cache, rope_theta, ntk_scaling_params);
     }
     else {
-        generate_rope_embed_cache(1, rope_head_dim, last_token_pos, last_cos_cache, last_sin_cache, rope_theta);
+        generate_rope_embed_cache(1, rope_head_dim, new_ctx->position_id, last_cos_cache, last_sin_cache, rope_theta);
     }
+    new_ctx->position_id += 1;
     
     ncnn::Mat last_mask(new_ctx->kv_cache[0].first.h + 1, 1);
     last_mask.fill(0.0f);
@@ -595,6 +779,20 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.input(vname, new_ctx->kv_cache[i].second);
         }
 
+        auto qwen_ctx = std::dynamic_pointer_cast<qwen3_5_ctx>(new_ctx);
+        if (qwen_ctx) {
+            for (int i = 0; i < sconv_cnt; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "cache_conv%d", i);
+                ex.input(name, qwen_ctx->sconv_cache[i]);
+            }
+            for (int i = 0; i < gdr_cnt; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "cache_gdr%d", i);
+                ex.input(name, qwen_ctx->gdr_cache[i]);
+            }
+        }
+
         for (int i = 0; i < attn_cnt; i++) {
             char kname[32], vname[32];
             std::snprintf(kname, sizeof(kname), "out_cache_k%d", i);
@@ -604,6 +802,24 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
             ex.extract(vname, v_cache);
             new_ctx->kv_cache[i] = std::make_pair(std::move(k_cache), std::move(v_cache));
         }
+
+        if (qwen_ctx) {
+            for (int i = 0; i < sconv_cnt; ++i) {
+                char name[32];
+                std::snprintf(name, sizeof(name), "out_cache_conv%d", i);
+                ncnn::Mat cache;
+                ex.extract(name, cache);
+                qwen_ctx->sconv_cache[i] = std::move(cache);
+            }
+            for (int i = 0; i < gdr_cnt; ++i) {
+                char name[32];
+                std::snprintf(name, sizeof(name), "out_cache_gdr%d", i);
+                ncnn::Mat cache;
+                ex.extract(name, cache);
+                qwen_ctx->gdr_cache[i] = std::move(cache);
+            }
+        }
+
         ex.extract("out0", decode_out);
     }
 
@@ -626,7 +842,6 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::prefill(const std::string& input
         }
     }
     new_ctx->cur_token = next_token_id;
-    new_ctx->position_id += ((int)token_ids.size() + 1);
 
     return new_ctx;
 }
@@ -721,6 +936,20 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::generate(const std::shared_ptr<n
                 ex.input(vname, ctx->kv_cache[i].second);
             }
 
+            auto qwen_ctx = std::dynamic_pointer_cast<qwen3_5_ctx>(ctx);
+            if (qwen_ctx) {
+                for (int i = 0; i < sconv_cnt; ++i) {
+                    char name[16];
+                    std::snprintf(name, sizeof(name), "cache_conv%d", i);
+                    ex.input(name, qwen_ctx->sconv_cache[i]);
+                }
+                for (int i = 0; i < gdr_cnt; ++i) {
+                    char name[16];
+                    std::snprintf(name, sizeof(name), "cache_gdr%d", i);
+                    ex.input(name, qwen_ctx->gdr_cache[i]);
+                }
+            }
+
             for (int i = 0; i < attn_cnt; ++i) {
                 char kname[32], vname[32];
                 std::snprintf(kname, sizeof(kname), "out_cache_k%d", i);
@@ -730,6 +959,24 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::generate(const std::shared_ptr<n
                 ex.extract(vname, v_cache);
                 ctx->kv_cache[i] = { std::move(k_cache), std::move(v_cache) };
             }
+
+            if (qwen_ctx) {
+                for (int i = 0; i < sconv_cnt; ++i) {
+                    char name[32];
+                    std::snprintf(name, sizeof(name), "out_cache_conv%d", i);
+                    ncnn::Mat cache;
+                    ex.extract(name, cache);
+                    qwen_ctx->sconv_cache[i] = std::move(cache);
+                }
+                for (int i = 0; i < gdr_cnt; ++i) {
+                    char name[32];
+                    std::snprintf(name, sizeof(name), "out_cache_gdr%d", i);
+                    ncnn::Mat cache;
+                    ex.extract(name, cache);
+                    qwen_ctx->gdr_cache[i] = std::move(cache);
+                }
+            }
+
             ex.extract("out0", decode_out);
         }
 
@@ -744,6 +991,7 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::generate(const std::shared_ptr<n
         memcpy(logits.data(), logits_mat.data, sizeof(float) * vocab_size);
 
         for (int t : history) {
+            if (t >= vocab_size) continue;
             if (logits[t] < 0) logits[t] *= cfg.repetition_penalty;
             else logits[t] /= cfg.repetition_penalty;
         }
@@ -800,8 +1048,13 @@ void ncnn_llm_gpt::get_image_size_for_patches(int image_height, int image_width,
 
 #if NCNN_LLM_WITH_OPENCV
 ncnn::Mat ncnn_llm_gpt::bgr_to_pixel_values(const cv::Mat& bgr) const {
-    const float image_mean[3] = {0.48145466f, 0.4578275f, 0.40821073f};
-    const float image_std[3] = {0.26862954f, 0.26130258f, 0.27577711f};
+    float image_mean[3] = {0.48145466f, 0.4578275f, 0.40821073f};
+    float image_std[3] = {0.26862954f, 0.26130258f, 0.27577711f};
+
+    if (vision_type == Vision_Type::VISION_QWEN3_5_VL) {
+        image_mean[0] = 0.5f; image_mean[1] = 0.5f; image_mean[2] = 0.5f;
+        image_std[0] = 0.5f; image_std[1] = 0.5f; image_std[2] = 0.5f;
+    }
 
     int img_h = bgr.rows;
     int img_w = bgr.cols;
@@ -835,9 +1088,15 @@ ncnn::Mat ncnn_llm_gpt::bgr_to_pixel_values(const cv::Mat& bgr) const {
                 int cur_img_x = start_x + x;
                 if (img_row_ptr && cur_img_x < img_w) {
                     const uchar* pixel = img_row_ptr + cur_img_x * 3;
-                    *ptr_r++ = (pixel[2] / 255.f - image_mean[0]) / image_std[0];
-                    *ptr_g++ = (pixel[1] / 255.f - image_mean[1]) / image_std[1];
-                    *ptr_b++ = (pixel[0] / 255.f - image_mean[2]) / image_std[2];
+                    if (vision_type == Vision_Type::VISION_QWEN3_5_VL) {
+                        *ptr_r++ = (pixel[2] / 255.5f - image_mean[0]) / image_std[0];
+                        *ptr_g++ = (pixel[1] / 255.5f - image_mean[1]) / image_std[1];
+                        *ptr_b++ = (pixel[0] / 255.5f - image_mean[2]) / image_std[2];
+                    } else {
+                        *ptr_r++ = (pixel[2] / 255.f - image_mean[0]) / image_std[0];
+                        *ptr_g++ = (pixel[1] / 255.f - image_mean[1]) / image_std[1];
+                        *ptr_b++ = (pixel[0] / 255.f - image_mean[2]) / image_std[2];
+                    }
                 } else {
                     float pad_val = 0.0f;
                     *ptr_r++ = pad_val;
@@ -856,24 +1115,24 @@ ncnn::Mat ncnn_llm_gpt::bgr_to_pixel_values(const cv::Mat& bgr) const {
 }
 #endif
 
-ncnn::Mat ncnn_llm_gpt::reorder_patches_for_merge(const ncnn::Mat& pixel_values, int h_patches, int w_patches) const {
+ncnn::Mat ncnn_llm_gpt::reorder_patches_for_merge(const ncnn::Mat& pixel_values, int h_patches, int w_patches, int merge_size) const {
     int num_patches = pixel_values.h;
     int feature_dim = pixel_values.w;
 
     if (num_patches != h_patches * w_patches) return ncnn::Mat();
 
-    int grid_h = h_patches / spatial_merge_size;
-    int grid_w = w_patches / spatial_merge_size;
+    int grid_h = h_patches / merge_size;
+    int grid_w = w_patches / merge_size;
 
     ncnn::Mat reordered_pixel_values(feature_dim, num_patches, (size_t)4u);
     int new_row_idx = 0;
 
     for (int gh = 0; gh < grid_h; gh++) {
         for (int gw = 0; gw < grid_w; gw++) {
-            for (int mh = 0; mh < spatial_merge_size; mh++) {
-                for (int mw = 0; mw < spatial_merge_size; mw++) {
-                    int original_h = gh * spatial_merge_size + mh;
-                    int original_w = gw * spatial_merge_size + mw;
+            for (int mh = 0; mh < merge_size; mh++) {
+                for (int mw = 0; mw < merge_size; mw++) {
+                    int original_h = gh * merge_size + mh;
+                    int original_w = gw * merge_size + mw;
                     int original_row_idx = original_h * w_patches + original_w;
 
                     const float* src_ptr = pixel_values.row(original_row_idx);
@@ -1013,7 +1272,7 @@ int ncnn_llm_gpt::get_visiual_features(const cv::Mat& bgr, ncnn::Mat& image_embe
     const int seq_len = num_patches_w * num_patches_h;
 
     ncnn::Mat pixel_values = bgr_to_pixel_values(bgr_resized);
-    pixel_values = reorder_patches_for_merge(pixel_values, num_patches_h, num_patches_w);
+    pixel_values = reorder_patches_for_merge(pixel_values, num_patches_h, num_patches_w, spatial_merge_size);
     pixel_values = pixel_values.reshape(patch_size * patch_size, 1, 3, seq_len);
 
     {
@@ -1040,6 +1299,31 @@ int ncnn_llm_gpt::get_visiual_features(const cv::Mat& bgr, ncnn::Mat& image_embe
         ex.input("in0", patch);
         ex.extract("out0", patch_embed);
         memcpy(patch_embeds.row(i), patch_embed.reshape(patch_dim), patch_dim * sizeof(float));
+    }
+
+    if (vision_embed_pos) {
+        ncnn::Mat pos_embeds;
+        {
+            ncnn::Mat grid(num_patches_w, num_patches_h);
+            ncnn::Extractor ex = vision_embed_pos->create_extractor();
+            ex.input("in0", grid);
+            ex.extract("out0", pos_embeds);
+        }
+        
+        pos_embeds = reorder_patches_for_merge(pos_embeds, num_patches_h, num_patches_w, spatial_merge_size);
+
+        ncnn::Mat emb_cos, emb_sin;
+        generate_rope_embeds(num_patches_w, num_patches_h, emb_cos, emb_sin, 32);
+
+        {
+            ncnn::Extractor ex = vision_encoder->create_extractor();
+            ex.input("in0", patch_embeds);
+            ex.input("in1", pos_embeds);
+            ex.input("in2", emb_cos);
+            ex.input("in3", emb_sin);
+            ex.extract("out0", image_embeds);
+        }
+        return 0;
     }
 
     ncnn::Mat emb_cos, emb_sin;

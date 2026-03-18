@@ -34,6 +34,7 @@ namespace cv { class Mat; }
 #include "utils/tokenizer/bpe_tokenizer.h"
 #include "utils/rope_embed.h"
 #include "utils/prompt.h"
+#include "utils/gdr.h"
 
 using nlohmann::json;
 
@@ -50,11 +51,50 @@ struct GenerateConfig {
     bool debug = false;
 };
 
-struct ncnn_llm_gpt_ctx
-{
+class ncnn_llm_gpt_ctx {
+public:
+    virtual ~ncnn_llm_gpt_ctx() = default;
+    
+    virtual std::shared_ptr<ncnn_llm_gpt_ctx> clone() const = 0;
+    
     std::vector<std::pair<ncnn::Mat, ncnn::Mat>> kv_cache;
     int cur_token = 0;
     int position_id = 0;
+};
+
+class ncnn_llm_gpt_base_ctx : public ncnn_llm_gpt_ctx {
+public:
+    std::shared_ptr<ncnn_llm_gpt_ctx> clone() const override {
+        auto dst = std::make_shared<ncnn_llm_gpt_base_ctx>();
+        dst->kv_cache.resize(kv_cache.size());
+        for (size_t i = 0; i < kv_cache.size(); ++i) {
+            dst->kv_cache[i].first = kv_cache[i].first;
+            dst->kv_cache[i].second = kv_cache[i].second;
+        }
+        dst->cur_token = cur_token;
+        dst->position_id = position_id;
+        return dst;
+    }
+};
+
+class qwen3_5_ctx : virtual public ncnn_llm_gpt_ctx {
+public:
+    std::vector<ncnn::Mat> sconv_cache;
+    std::vector<ncnn::Mat> gdr_cache;
+    
+    std::shared_ptr<ncnn_llm_gpt_ctx> clone() const override {
+        auto dst = std::make_shared<qwen3_5_ctx>();
+        dst->kv_cache.resize(kv_cache.size());
+        for (size_t i = 0; i < kv_cache.size(); ++i) {
+            dst->kv_cache[i].first = kv_cache[i].first;
+            dst->kv_cache[i].second = kv_cache[i].second;
+        }
+        dst->sconv_cache = sconv_cache;
+        dst->gdr_cache = gdr_cache;
+        dst->cur_token = cur_token;
+        dst->position_id = position_id;
+        return dst;
+    }
 };
 
 class ncnn_llm_gpt {
@@ -63,6 +103,7 @@ private:
     std::shared_ptr<ncnn::Net> embed_net;
     std::shared_ptr<ncnn::Net> proj_out_net;
     std::shared_ptr<ncnn::Net> vision_embed_patch;
+    std::shared_ptr<ncnn::Net> vision_embed_pos;
     std::shared_ptr<ncnn::Net> vision_encoder;
     std::shared_ptr<BpeTokenizer> bpe;
 
@@ -75,6 +116,8 @@ protected:
     int think_id = -1;
     int think_end_id = -1;
     int attn_cnt = 32;
+    int sconv_cnt = 0;
+    int gdr_cnt = 0;
     int rope_head_dim = 64;
 
     enum RoPE_Type {
@@ -96,6 +139,12 @@ protected:
     int patch_dim = 1280;
     int max_num_patches = 49152;
     int spatial_merge_size = 2;
+
+    enum Vision_Type {
+        VISION_CLOSE = 0,
+        VISION_VIT = 1,
+        VISION_QWEN3_5_VL = 2
+    } vision_type;
 
     enum VisionRoPE_Type {
         mRoPE = 0
@@ -151,7 +200,7 @@ private:
     int get_scaled_image_size(float scale, int size, int effective_patch_size) const;
     void get_image_size_for_patches(int image_height, int image_width, int patch_size, int max_num_patches, int& target_height, int& target_width) const;
     ncnn::Mat bgr_to_pixel_values(const cv::Mat& bgr) const;
-    ncnn::Mat reorder_patches_for_merge(const ncnn::Mat& pixel_values, int h_patches, int w_patches) const;
+    ncnn::Mat reorder_patches_for_merge(const ncnn::Mat& pixel_values, int h_patches, int w_patches, int merge_size = 2) const;
     void get_window_index(int num_patches_w, int num_patches_h, std::vector<int>& window_index, std::vector<int>& cu_window_seqlens) const;
     static std::vector<float> compute_inv_freq(int dim, float theta = 10000.0f);
     void generate_rope_embeds(int num_patches_w, int num_patches_h, ncnn::Mat& emb_cos, ncnn::Mat& emb_sin, int rope_dim) const;
