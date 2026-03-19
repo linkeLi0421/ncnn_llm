@@ -5,14 +5,6 @@ set_encodings("utf-8")
 
 set_languages("c++20", "c11")
 
-local with_opencv = not is_plat("wasm")
-
-if with_opencv then
-    add_defines("NCNN_LLM_WITH_OPENCV=1")
-else
-    add_defines("NCNN_LLM_WITH_OPENCV=0")
-end
-
 if is_plat("wasm") then
     add_requires("emscripten")
     set_toolchains("emcc@emscripten")
@@ -42,9 +34,6 @@ add_requires("ncnn master", {
     }
 })
 
-if with_opencv then
-    add_requires("opencv")
-end
 add_requires("nlohmann_json")
 
 add_includedirs("src/")
@@ -59,9 +48,6 @@ target("ncnn_llm")
     add_files("src/utils/*.cpp")
     add_deps("ncnn_tokenizer")
     add_packages("ncnn", "nlohmann_json")
-    if with_opencv then
-        add_packages("opencv")
-    end
 
 target("llm_ncnn_run")
     set_kind("binary")
@@ -69,9 +55,6 @@ target("llm_ncnn_run")
     add_files("examples/llm_ncnn_run/*.cpp")
     add_deps("ncnn_llm")
     add_packages("ncnn", "nlohmann_json")
-    if with_opencv then
-        add_packages("opencv")
-    end
 
     set_rundir("$(projectdir)/")
 
@@ -81,9 +64,6 @@ target("benchllm")
 
     add_deps("ncnn_llm")
     add_packages("ncnn")
-    if with_opencv then
-        add_packages("opencv")
-    end
 
     set_rundir("$(projectdir)/assets/minicpm4_0.5b/")
 
@@ -93,8 +73,5 @@ target("test_llm")
     add_files("tests/test_llm.cpp")
     add_deps("ncnn_llm")
     add_packages("ncnn", "nlohmann_json")
-    if with_opencv then
-        add_packages("opencv")
-    end
 
     set_rundir("$(projectdir)/")
