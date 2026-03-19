@@ -16,17 +16,6 @@
 #include <unordered_set>
 #include <algorithm>
 
-#ifndef NCNN_LLM_WITH_OPENCV
-#define NCNN_LLM_WITH_OPENCV 1
-#endif
-
-#if NCNN_LLM_WITH_OPENCV
-#include <opencv2/core/core.hpp>
-#include <opencv2/imgproc/imgproc.hpp>
-#else
-namespace cv { class Mat; }
-#endif
-
 #include <mat.h>
 #include <net.h>
 #include <nlohmann/json.hpp>
@@ -35,6 +24,7 @@ namespace cv { class Mat; }
 #include "utils/rope_embed.h"
 #include "utils/prompt.h"
 #include "utils/gdr.h"
+#include "utils/image_utils.h"
 
 using nlohmann::json;
 
@@ -157,7 +147,7 @@ public:
     ncnn_llm_gpt(const std::string& model_path, bool use_vulkan = false, int num_threads = 0, int vulkan_device = 0);
 
     std::shared_ptr<ncnn_llm_gpt_ctx> prefill(const std::string& input_text) const;
-    std::shared_ptr<ncnn_llm_gpt_ctx> prefill(const std::string& input_text, const cv::Mat& bgr, const std::shared_ptr<ncnn_llm_gpt_ctx> ctx) const;
+    std::shared_ptr<ncnn_llm_gpt_ctx> prefill(const std::string& input_text, const ncnn::Mat& bgr, const std::shared_ptr<ncnn_llm_gpt_ctx> ctx) const;
     std::shared_ptr<ncnn_llm_gpt_ctx> prefill(const std::string& input_text, const std::shared_ptr<ncnn_llm_gpt_ctx> ctx) const;
     std::shared_ptr<ncnn_llm_gpt_ctx> generate(const std::shared_ptr<ncnn_llm_gpt_ctx>& ctx_in, const GenerateConfig& cfg, std::function<void(const std::string&)> callback) const;
 
@@ -199,10 +189,10 @@ public:
 private:
     int get_scaled_image_size(float scale, int size, int effective_patch_size) const;
     void get_image_size_for_patches(int image_height, int image_width, int patch_size, int max_num_patches, int& target_height, int& target_width) const;
-    ncnn::Mat bgr_to_pixel_values(const cv::Mat& bgr) const;
+    ncnn::Mat bgr_to_pixel_values(const ncnn::Mat& bgr) const;
     ncnn::Mat reorder_patches_for_merge(const ncnn::Mat& pixel_values, int h_patches, int w_patches, int merge_size = 2) const;
     void get_window_index(int num_patches_w, int num_patches_h, std::vector<int>& window_index, std::vector<int>& cu_window_seqlens) const;
     static std::vector<float> compute_inv_freq(int dim, float theta = 10000.0f);
     void generate_rope_embeds(int num_patches_w, int num_patches_h, ncnn::Mat& emb_cos, ncnn::Mat& emb_sin, int rope_dim) const;
-    int get_visiual_features(const cv::Mat& bgr, ncnn::Mat& image_embeds, int& num_patches_w, int& num_patches_h) const;
+    int get_visiual_features(const ncnn::Mat& bgr, ncnn::Mat& image_embeds, int& num_patches_w, int& num_patches_h) const;
 };

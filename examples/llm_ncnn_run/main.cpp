@@ -8,11 +8,6 @@
 #include <iostream>
 #include <string>
 
-#if NCNN_LLM_WITH_OPENCV
-#include <opencv2/core/core.hpp>
-#include <opencv2/highgui/highgui.hpp>
-#endif
-
 namespace {
 
 std::string normalize_model_path(std::string path) {
@@ -24,7 +19,7 @@ std::string normalize_model_path(std::string path) {
     return path;
 }
 
-} // namespace
+}
 
 int main(int argc, char** argv) {
     Options opt = parse_options(argc, argv);
@@ -35,28 +30,20 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Detect template type from model config
     TemplateType template_type = detect_template_type(opt.model_path);
 
     ncnn_llm_gpt model(opt.model_path, opt.use_vulkan, opt.num_threads, opt.vulkan_device);
     std::vector<json> builtin_tools = opt.enable_builtin_tools ? make_builtin_tools() : std::vector<json>();
     auto builtin_router = make_builtin_router();
 
-#if NCNN_LLM_WITH_OPENCV
-    cv::Mat image;
+    ncnn::Mat image;
     if (!opt.image_path.empty()) {
-        image = cv::imread(opt.image_path, cv::IMREAD_COLOR);
-        if (image.empty()) {
+        image = load_image_to_ncnn_mat(opt.image_path);
+        if (ncnn_mat_empty(image)) {
             std::cerr << "Failed to load image: " << opt.image_path << "\n";
             return 1;
         }
         std::cerr << "Image loaded: " << opt.image_path << "\n";
     }
     return run_cli(opt, model, builtin_tools, builtin_router, template_type, image);
-#else
-    if (!opt.image_path.empty()) {
-        std::cerr << "Warning: --image option is not supported without OpenCV\n";
-    }
-    return run_cli(opt, model, builtin_tools, builtin_router, template_type);
-#endif
 }

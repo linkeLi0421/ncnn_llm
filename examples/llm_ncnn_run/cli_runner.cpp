@@ -10,7 +10,7 @@ TemplateType detect_template_type(const std::string& model_path) {
     try {
         std::ifstream ifs(model_path + "/model.json");
         if (!ifs.is_open()) {
-            return TemplateType::CHATML;  // Default
+            return TemplateType::CHATML;
         }
         
         json config;
@@ -23,7 +23,6 @@ TemplateType detect_template_type(const std::string& model_path) {
             }
         }
     } catch (...) {
-        // Ignore errors, default to CHATML
     }
     
     return TemplateType::CHATML;
@@ -33,11 +32,8 @@ int run_cli(const Options& opt,
             ncnn_llm_gpt& model,
             const std::vector<json>& builtin_tools,
             const std::unordered_map<std::string, std::function<json(const json&)>>& builtin_router,
-            TemplateType template_type
-#if NCNN_LLM_WITH_OPENCV
-            , const cv::Mat& image
-#endif
-            ) {
+            TemplateType template_type,
+            const ncnn::Mat& image) {
     std::cout << "llm_ncnn_run (cli). Type 'exit' or 'quit' to end the conversation.\n";
     std::cout << "Using template: " << (template_type == TemplateType::YOUTU ? "YouTu" : "ChatML") << "\n";
 
@@ -49,13 +45,8 @@ int run_cli(const Options& opt,
         ctx = model.define_tools(ctx, builtin_tools, system_prompt);
     }
 
-#if NCNN_LLM_WITH_OPENCV
-    bool has_image = !image.empty();
+    bool has_image = !ncnn_mat_empty(image);
     bool first_turn = true;
-#else
-    bool has_image = false;
-    bool first_turn = false;
-#endif
 
     while (true) {
         std::string input;
@@ -63,7 +54,6 @@ int run_cli(const Options& opt,
         if (!std::getline(std::cin, input)) break;
         if (input == "exit" || input == "quit") break;
 
-#if NCNN_LLM_WITH_OPENCV
         if (first_turn && has_image) {
             std::string user_message = apply_chat_template(template_type, {
                 {"user", "<|vision_start|><|image_pad|><|vision_end|>" + input}
@@ -76,12 +66,6 @@ int run_cli(const Options& opt,
             }, {}, true, false);
             ctx = model.prefill(user_message, ctx);
         }
-#else
-        std::string user_message = apply_chat_template(template_type, {
-            {"user", input}
-        }, {}, true, true);
-        ctx = model.prefill(user_message, ctx);
-#endif
 
         std::cout << "Assistant: ";
         GenerateConfig cfg;
@@ -111,7 +95,6 @@ int run_cli(const Options& opt,
                 result = json{{"error", e.what()}};
             }
 
-            // Output tool call and result
             std::cout << "\n[Tool Call]: " << call.dump() << "\n";
             std::cout << "[Tool Result]: " << result.dump() << "\n";
             std::cout << "Assistant: " << std::flush;
