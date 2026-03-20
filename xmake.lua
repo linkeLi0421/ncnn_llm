@@ -75,3 +75,11 @@ target("test_llm")
     add_packages("ncnn", "nlohmann_json")
 
     set_rundir("$(projectdir)/")
+
+target("nllb_main")
+    set_kind("binary")
+    add_files("examples/nllb_main.cpp")
+    add_deps("ncnn_llm")
+    add_packages("ncnn")
+
+    set_rundir("$(projectdir)/")
