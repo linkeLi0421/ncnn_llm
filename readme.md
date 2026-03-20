@@ -2,7 +2,7 @@
 
 中文版: [README_CN](README_CN.md)
 
-**ncnn_llm** provides Large Language Model (LLM) support for the [ncnn](https://github.com/Tencent/ncnn) framework.
+**ncnn_llm** provides Large Language Model (LLM) and embedding model support for the [ncnn](https://github.com/Tencent/ncnn) framework.
 
 ncnn is a high-performance neural network inference framework specifically optimized for mobile and embedded devices. By integrating LLMs into ncnn, this project enables the execution of complex natural language processing tasks in resource-constrained environments (edge devices, mobile phones, IoT).
 
@@ -27,11 +27,16 @@ The project is currently in active development. Below is the current compatibili
 
 *These models run smoothly with the implemented tokenizer and inference pipeline.*
 
+**LLM Models:**
 * **MiniCPM4**
 * **Qwen3**
 * **Qwen3.5**
 * **Qwen2.5-VL**
 * **NLLB** (No Language Left Behind)
+
+**Embedding Models:**
+* **Jina-Embeddings-v5-Text-Nano** - Text embedding model (768-dim)
+* **Jina-CLIP-v2** - Multimodal embedding model (text+image, 1024-dim)
 
 ### ⚠️ Running with Issues
 
@@ -135,6 +140,131 @@ Notes:
 
 ---
 
+## 🔤 Embedding Models
+
+This project supports text embedding and multimodal embedding models with a unified `ncnn_embedding` interface.
+
+### Supported Models
+
+| Model | Type | Dimension | Description |
+|-------|------|-----------|-------------|
+| Jina-Embeddings-v5-Text-Nano | Text Embedding | 768 | Multilingual text embedding |
+| Jina-CLIP-v2 | Multimodal Embedding | 1024 | Text + Image embedding |
+
+### Build
+
+```bash
+xmake build embedding_main
+xmake build clip_main
+```
+
+### Text Embedding Example
+
+```bash
+xmake run embedding_main --model ./assets/jina-embeddings-v5-text-nano
+```
+
+Output example:
+```text
+Text-Text Similarity Matrix:
+               今天天气.. 今天天气.. 我喜欢吃.. 我喜欢吃.. The weather ..
+今天天气.. 1.0000         0.7116         0.6915         0.6872         0.6823
+...
+```
+
+### CLIP Multimodal Embedding Example
+
+```bash
+xmake run clip_main --model ./assets/jina_clip_v2 --image ./assets/ganyu.jpg
+```
+
+Output example:
+```text
+Text-Image Similarity Matrix:
+                              assets/ganyu.jpg
+a cat                         0.0996
+a dog                         0.0595
+blue hair anime character     0.2720
+蓝色头发动漫角色              0.2823
+```
+
+### API Usage
+
+```cpp
+#include "ncnn_embedding.h"
+
+// Load model
+ncnn_embedding embed("./assets/jina_clip_v2", false, 4);
+
+// Text encoding
+std::vector<float> text_vec = embed.encode_text("Hello world");
+
+// Image encoding (CLIP models only)
+if (embed.supports_image()) {
+    std::vector<float> image_vec = embed.encode_image_file("./image.jpg");
+}
+
+// Calculate similarity
+float similarity = cosine_similarity(text_vec, image_vec);
+```
+
+### model.json Configuration Format
+
+**Text Embedding Model:**
+```json
+{
+    "model_type": "embedding",
+    "params": {
+        "encoder_param": "model.ncnn.param",
+        "encoder_bin": "model.ncnn.bin"
+    },
+    "tokenizer": {
+        "type": "bbpe",
+        "vocab_file": "vocab.txt",
+        "merges_file": "merges.txt"
+    },
+    "setting": {
+        "embed_dim": 768,
+        "rope": {
+            "type": "RoPE_full",
+            "rope_head_dim": 64,
+            "rope_theta": 1000000.0
+        }
+    }
+}
+```
+
+**CLIP Multimodal Model:**
+```json
+{
+    "model_type": "clip",
+    "params": {
+        "text_encoder_param": "text.ncnn.param",
+        "text_encoder_bin": "text.ncnn.bin",
+        "vision_encoder_param": "vision.ncnn.param",
+        "vision_encoder_bin": "vision.ncnn.bin"
+    },
+    "tokenizer": {
+        "type": "unigram",
+        "vocab_file": "vocab.txt"
+    },
+    "setting": {
+        "text_embed_dim": 1024,
+        "vision_embed_dim": 1024,
+        "image_size": 512,
+        "image_mean": [0.485, 0.456, 0.406],
+        "image_std": [0.229, 0.224, 0.225],
+        "rope": {
+            "type": "RoPE_full",
+            "rope_head_dim": 64,
+            "rope_theta": 1000000.0
+        }
+    }
+}
+```
+
+---
+
 ## 📊 Benchmark
 
 The project includes a benchmark tool for performance testing.
@@ -183,18 +313,21 @@ xmake run test_llm
 ncnn_llm/
 ├── src/                    # Core library source
 │   ├── ncnn_llm_gpt.cpp    # Main LLM inference implementation
+│   ├── ncnn_embedding.cpp  # Embedding model implementation
 │   ├── sampling.cpp        # Token sampling strategies
 │   ├── nllb_600m.cpp       # NLLB model support
 │   └── utils/              # Utility modules
 │       ├── tokenizer/      # Tokenizer implementations (BPE, Unigram)
+│       ├── image_utils.cpp # Image processing utilities
 │       ├── gdr.cpp         # GDR support
 │       ├── prompt.cpp      # Prompt handling
 │       └── rope_embed.cpp  # RoPE embedding
 ├── examples/               # Example applications
 │   ├── llm_ncnn_run/       # Unified CLI runner
-│   ├── bytelevelbpe_main.cpp
-│   ├── nllb_main.cpp
-│   └── unigram_main.cpp
+│   ├── embedding_main.cpp  # Text embedding example
+│   ├── clip_main.cpp       # CLIP multimodal embedding example
+│   ├── nllb_main.cpp       # NLLB translation example
+│   └── unigram_main.cpp    # Unigram tokenizer example
 ├── benchmark/              # Performance benchmarks
 │   └── benchllm.cpp
 ├── tests/                  # Unit tests

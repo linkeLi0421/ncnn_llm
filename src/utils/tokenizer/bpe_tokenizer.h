@@ -3,33 +3,13 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
-#include <optional>
 #include <cstdint>
 #include <functional>
 #include <utility>
 #include <limits>
 #include <mutex>
 #include <map>
-
-struct SpecialTokensConfig {
-    std::optional<std::string> bos_token;
-    std::optional<std::string> eos_token;
-    std::optional<std::string> unk_token;
-    std::optional<std::string> sep_token;
-    std::optional<std::string> pad_token;
-    std::optional<std::string> cls_token;
-    std::optional<std::string> mask_token;
-};
-
-struct SpecialTokenIds {
-    int bos_id = -1;
-    int eos_id = -1;
-    int unk_id = -1;
-    int sep_id = -1;
-    int pad_id = -1;
-    int cls_id = -1;
-    int mask_id = -1;
-};
+#include "tokenizer_types.h"
 
 class BpeTokenizer {
 public:
@@ -54,7 +34,6 @@ public:
     const SpecialTokenIds& special_ids() const { return special_ids_; }
     bool fallback_to_chars() const { return fallback_to_chars_; }
 
-    // 追加 / 设置 additional_special_tokens（encode/decode 优先级最高）
     void AddAdditionalSpecialToken(const std::string& token,
                                    bool add_if_missing = true);
 
@@ -65,7 +44,6 @@ public:
         return additional_special_token_ids_;
     }
 
-    // 明确语义：禁止拷贝，允许移动
     BpeTokenizer(const BpeTokenizer&) = delete;
     BpeTokenizer& operator=(const BpeTokenizer&) = delete;
     BpeTokenizer(BpeTokenizer&& other) noexcept;
@@ -90,7 +68,6 @@ private:
     static bool NextUtf8(const std::string& s, size_t& i, uint32_t& cp, size_t& cp_len);
     static std::vector<std::string> Utf8Chars(const std::string& s);
 
-    // New Byte-Level helpers
     void InitByteMaps();
     std::string ByteEncode(const std::string& text) const;
     std::string ByteDecode(const std::string& text) const;
@@ -105,16 +82,11 @@ private:
     SpecialTokenIds special_ids_;
     bool fallback_to_chars_ = true;
 
-    // additional_special_tokens（在 encode/decode 中优先级最高）
-    // 1) encode 时，先在原始字符串中按子串匹配这些 token，匹配后直接映射到 id，
-    //    不再参与 BPE。
-    // 2) decode 时，将其视为特殊 token，skip_special_tokens=true 时会跳过。
     std::vector<std::string> additional_special_tokens_;
     std::vector<int> additional_special_token_ids_;
     std::unordered_map<std::string, int> additional_special_token_to_id_;
     std::unordered_set<int> additional_special_id_set_;
 
-    // Byte Encoder support
     bool use_byte_encoder_ = false;
     std::vector<uint32_t> byte_encoder_;
     std::map<uint32_t, uint8_t> byte_decoder_;

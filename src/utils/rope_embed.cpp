@@ -127,6 +127,37 @@ void generate_rope_embed_cache(int seqlen, int embed_dim, int position_id, ncnn:
     }
 }
 
+void generate_rope_embed_cache_full(int seqlen, int head_dim, int position_id, ncnn::Mat& cos_cache, ncnn::Mat& sin_cache, float rope_theta)
+{
+    int half_dim = head_dim / 2;
+    std::vector<float> inv_freq(half_dim);
+    for (int i = 0; i < half_dim; i++)
+    {
+        inv_freq[i] = 1.f / powf(rope_theta, (float)(i * 2) / head_dim);
+    }
+
+    cos_cache.create(head_dim, seqlen);
+    sin_cache.create(head_dim, seqlen);
+
+    for (int i = 0; i < seqlen; i++)
+    {
+        float* cos_ptr = cos_cache.row(i);
+        float* sin_ptr = sin_cache.row(i);
+
+        for (int j = 0; j < half_dim; j++)
+        {
+            const int pos = position_id + i;
+            const float t = pos * inv_freq[j];
+            const float cos_val = cosf(t);
+            const float sin_val = sinf(t);
+            cos_ptr[j] = cos_val;
+            cos_ptr[j + half_dim] = cos_val;
+            sin_ptr[j] = sin_val;
+            sin_ptr[j + half_dim] = sin_val;
+        }
+    }
+}
+
 void generate_rope_embed_cache_vision_mrope_interleaved(int seqlen,
                                                         int embed_dim,
                                                         int position_id,
