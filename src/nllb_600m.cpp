@@ -12,111 +12,16 @@
 #include <utility>
 #include <vector>
 
-// Internal-only includes
-#include <mat.h>
-#include <net.h>
+#include "ncnn_llm_base.h"
 #include "utils/tokenizer/bpe_tokenizer.h"
 
 namespace {
 
-// A KVCache is a vector of 24 pairs, where each pair holds (Key Matrix, Value Matrix)
-using KVCache = std::vector<std::pair<ncnn::Mat, ncnn::Mat>>;
 constexpr int kNumDecoderLayers = 24;
-constexpr int kMaxSteps = 512;
 
-// Create a 1D NCNN Mat (type int32) from a vector<int>
-ncnn::Mat mat_from_int_vector(const std::vector<int>& vec) {
-    ncnn::Mat m(static_cast<int>(vec.size()), 1, 1); // w=vec.size, h=1, c=1
-    std::memcpy(m.data, vec.data(), vec.size() * sizeof(int));
-    return m;
 }
 
-// In-place add: a += b (float32)
-void add_mats_inplace(ncnn::Mat& a, const ncnn::Mat& b) {
-    if (a.w != b.w || a.h != b.h || a.c != b.c) {
-        std::cerr << "add_mats_inplace: shape mismatch\n";
-        return;
-    }
-    if (a.elemsize != 4 || b.elemsize != 4) {
-        std::cerr << "add_mats_inplace: only float32 supported\n";
-        return;
-    }
-    float* pa = a;
-    const float* pb = b;
-    for (int i = 0; i < a.total(); ++i) {
-        pa[i] += pb[i];
-    }
-}
-
-// Sinusoidal positional embedding (returns (w=d_model, h=seq_len) float32 Mat)
-ncnn::Mat sinusoidal_positional_embedding(int seq_len, int d_model) {
-    int half_dim = d_model / 2;
-    ncnn::Mat emb(d_model, seq_len); // w=d_model, h=seq_len
-    emb.fill(0.0f);
-
-    std::vector<float> inv_freq(half_dim);
-    double log_10000 = std::log(10000.0);
-    double denom_base = static_cast<double>(std::max(1, half_dim));
-
-    for (int i = 0; i < half_dim; ++i) {
-        inv_freq[i] = static_cast<float>(std::exp(static_cast<double>(i) * -(log_10000 / denom_base)));
-    }
-
-    for (int i = 0; i < seq_len; ++i) {
-        float pos = static_cast<float>(i + 1); // 1-based
-        float* row_ptr = emb.row(i);
-        for (int j = 0; j < half_dim; ++j) {
-            float angle = pos * inv_freq[j];
-            row_ptr[j] = std::sin(angle);
-            row_ptr[j + half_dim] = std::cos(angle);
-        }
-    }
-    return emb;
-}
-
-// Sinusoidal embedding for a single position (returns (w=d_model, h=1))
-ncnn::Mat sinusoidal_positional_embedding_for_pos(int position, int d_model) {
-    int half_dim = d_model / 2;
-    ncnn::Mat emb(d_model); // 1D (w=d_model, h=1)
-    emb.fill(0.0f);
-
-    std::vector<float> inv_freq(half_dim);
-    double log_10000 = std::log(10000.0);
-    double denom_base = static_cast<double>(std::max(1, half_dim));
-
-    for (int i = 0; i < half_dim; ++i) {
-        inv_freq[i] = static_cast<float>(std::exp(static_cast<double>(i) * -(log_10000 / denom_base)));
-    }
-
-    float* emb_ptr = emb;
-    for (int j = 0; j < half_dim; ++j) {
-        float angle = static_cast<float>(position) * inv_freq[j];
-        emb_ptr[j] = std::sin(angle);
-        emb_ptr[j + half_dim] = std::cos(angle);
-    }
-    if (d_model % 2 != 0) {
-        emb_ptr[d_model - 1] = 0.0f;
-    }
-    return emb;
-}
-
-// Argmax over 1D logits
-int argmax1d(const ncnn::Mat& m) {
-    const float* p = m;
-    int max_idx = 0;
-    float max_val = p[0];
-    for (int i = 1; i < m.w; ++i) {
-        if (p[i] > max_val) {
-            max_val = p[i];
-            max_idx = i;
-        }
-    }
-    return max_idx;
-}
-
-} // namespace
-
-class nllb_600m::Impl {
+class nllb_600m::Impl : public ncnn_llm_base {
 public:
     Impl(std::string embed_param,
          std::string embed_bin,
@@ -127,8 +32,8 @@ public:
          std::string vocab_file,
          std::string merges_file,
          bool use_vulkan)
-    try
-        : embed_param_(std::move(embed_param))
+        : ncnn_llm_base(use_vulkan, 4)
+        , embed_param_(std::move(embed_param))
         , embed_bin_(std::move(embed_bin))
         , encoder_param_(std::move(encoder_param))
         , encoder_bin_(std::move(encoder_bin))
@@ -136,7 +41,6 @@ public:
         , decoder_bin_(std::move(decoder_bin))
         , vocab_file_(std::move(vocab_file))
         , merges_file_(std::move(merges_file))
-        , use_vulkan_(use_vulkan)
         , bpe_(BpeTokenizer::LoadFromFiles(
               vocab_file_,
               merges_file_,
@@ -147,37 +51,22 @@ public:
                   .mask_token = "<mask>",
               }))
     {
-        #if NCNN_VULKAN
-        if (use_vulkan_) {
-            ncnn::create_gpu_instance();
-        }
-        #endif
-
-        ncnn::Option opt;
-        opt.num_threads = 4;
-        opt.use_bf16_storage = false;
-        opt.use_vulkan_compute = use_vulkan_;
+        ncnn::Option opt = create_option();
 
         embed_net_.opt = opt;
         encoder_net_.opt = opt;
         decoder_net_.opt = opt;
 
-        if (embed_net_.load_param(embed_param_.c_str()) != 0 ||
-            embed_net_.load_model(embed_bin_.c_str()) != 0) {
+        if (!load_net(embed_net_, embed_param_, embed_bin_)) {
             std::cerr << "Failed to load embedding model\n";
-            ok_ = false;
         }
 
-        if (encoder_net_.load_param(encoder_param_.c_str()) != 0 ||
-            encoder_net_.load_model(encoder_bin_.c_str()) != 0) {
+        if (!load_net(encoder_net_, encoder_param_, encoder_bin_)) {
             std::cerr << "Failed to load encoder model\n";
-            ok_ = false;
         }
 
-        if (decoder_net_.load_param(decoder_param_.c_str()) != 0 ||
-            decoder_net_.load_model(decoder_bin_.c_str()) != 0) {
+        if (!load_net(decoder_net_, decoder_param_, decoder_bin_)) {
             std::cerr << "Failed to load decoder model\n";
-            ok_ = false;
         }
 
         if (ok_) {
@@ -190,31 +79,14 @@ public:
                 bos_eos_id_ = it->second;
             }
         }
-    } catch (const std::exception& e) {
-        std::cerr << "Initialization failed: " << e.what() << "\n";
-        ok_ = false;
-        #if NCNN_VULKAN
-        if (use_vulkan_) {
-            ncnn::destroy_gpu_instance();
-        }
-        #endif
     }
-
-    ~Impl() {
-        #if NCNN_VULKAN
-        if (use_vulkan_) {
-            ncnn::destroy_gpu_instance();
-        }
-        #endif
-    }
-
-    bool ok() const { return ok_; }
 
     std::string translate_sync(const std::string& input_text,
                                const std::string& source_lang,
-                               const std::string& target_lang) {
+                               const std::string& target_lang,
+                               const NllbConfig& config) {
         std::string out;
-        translate_stream(input_text, source_lang, target_lang,
+        translate_stream(input_text, source_lang, target_lang, config,
                          [&](const std::string& delta) { out += delta; });
         return out;
     }
@@ -222,6 +94,7 @@ public:
     bool translate_stream(const std::string& input_text,
                           const std::string& source_lang,
                           const std::string& target_lang,
+                          const NllbConfig& config,
                           std::function<void(const std::string&)> callback) {
         if (!ok_) return false;
 
@@ -241,32 +114,38 @@ public:
         std::vector<int> input_ids = bpe_.encode(input_text, false, true);
         input_ids.insert(input_ids.begin(), src_lang_id);
 
-        ncnn::Mat embed_input = embedding_forward(input_ids, /*pos*/ -1);
+        ncnn::Mat embed_input = embedding_forward(input_ids, -1);
         ncnn::Mat encoder_output = encoder_forward(embed_input);
 
         std::vector<int> bos = {bos_eos_id_};
-        ncnn::Mat bos_embed = embedding_forward(bos, /*pos*/ -1);
+        ncnn::Mat bos_embed = embedding_forward(bos, -1);
         KVCache kv_cache = decoder_prefill(bos_embed, encoder_output);
 
         int last_index = tgt_lang_id;
         std::vector<int> output;
         std::string last_decoded;
 
-        for (int pos = 2; pos < kMaxSteps; ++pos) {
+        SampleConfig sample_cfg;
+        sample_cfg.temperature = config.temperature;
+        sample_cfg.top_k = config.top_k;
+        sample_cfg.top_p = config.top_p;
+        sample_cfg.do_sample = config.do_sample;
+
+        for (int pos = 2; pos < config.max_steps; ++pos) {
             std::vector<int> step_ids = {last_index};
-            ncnn::Mat step_embed = embedding_forward(step_ids, /*pos*/ pos);
+            ncnn::Mat step_embed = embedding_forward(step_ids, pos);
 
             auto [logits, new_cache] = decoder_decode(step_embed, encoder_output, kv_cache);
             kv_cache = std::move(new_cache);
 
-            last_index = argmax1d(logits);
+            last_index = sample_logits(logits, sample_cfg);
             output.push_back(last_index);
 
             if (last_index == bos_eos_id_) {
                 break;
             }
 
-            std::string current = bpe_.decode(output, /*skip_special_tokens=*/true);
+            std::string current = bpe_.decode(output, true);
             if (current.size() >= last_decoded.size()) {
                 std::string delta = current.substr(last_decoded.size());
                 if (!delta.empty() && callback) callback(delta);
@@ -281,7 +160,6 @@ public:
     }
 
 private:
-    // Embedding subgraph
     ncnn::Mat embedding_forward(const std::vector<int>& input_ids, int pos) {
         ncnn::Extractor ex = embed_net_.create_extractor();
 
@@ -289,7 +167,7 @@ private:
         ex.input("in0", in_mat);
 
         ncnn::Mat out0;
-        ex.extract("out0", out0); // (w=d_model, h=seq_len) float32
+        ex.extract("out0", out0);
 
         if (pos == -1) {
             ncnn::Mat pos_emb = sinusoidal_positional_embedding(out0.h, out0.w);
@@ -304,7 +182,6 @@ private:
         }
     }
 
-    // Encoder subgraph
     ncnn::Mat encoder_forward(const ncnn::Mat& hidden) {
         ncnn::Extractor ex = encoder_net_.create_extractor();
         ex.input("in0", hidden);
@@ -313,7 +190,6 @@ private:
         return out0;
     }
 
-    // Decoder prefill
     KVCache decoder_prefill(const ncnn::Mat& hidden, const ncnn::Mat& encoder_out) {
         KVCache kv_cache;
         kv_cache.reserve(kNumDecoderLayers);
@@ -346,7 +222,6 @@ private:
         return kv_cache;
     }
 
-    // Decoder single-step
     std::pair<ncnn::Mat, KVCache> decoder_decode(const ncnn::Mat& new_token,
                                                  const ncnn::Mat& encoder_out,
                                                  const KVCache& old_kv_cache) {
@@ -385,24 +260,18 @@ private:
     }
 
 private:
-    // Persist paths (handy for logging/reloads)
     std::string embed_param_, embed_bin_;
     std::string encoder_param_, encoder_bin_;
     std::string decoder_param_, decoder_bin_;
     std::string vocab_file_, merges_file_;
 
-    // Models and tokenizer
     ncnn::Net embed_net_;
     ncnn::Net encoder_net_;
     ncnn::Net decoder_net_;
     BpeTokenizer bpe_;
 
     int bos_eos_id_{2};
-    bool use_vulkan_{false};
-    bool ok_{true};
 };
-
-// Public API implementation
 
 nllb_600m::nllb_600m(std::string embed_param,
                      std::string embed_bin,
@@ -420,7 +289,7 @@ nllb_600m::nllb_600m(std::string embed_param,
                                    std::move(decoder_bin),
                                    std::move(vocab_file),
                                    std::move(merges_file),
-                                   /*use_vulkan=*/false)) {}
+                                   false)) {}
 
 nllb_600m::nllb_600m(std::string embed_param,
                      std::string embed_bin,
@@ -447,7 +316,15 @@ std::string nllb_600m::translate(const std::string& input_text,
                                  const std::string& source_lang,
                                  const std::string& target_lang) {
     if (!impl_ || !impl_->ok()) return {};
-    return impl_->translate_sync(input_text, source_lang, target_lang);
+    return impl_->translate_sync(input_text, source_lang, target_lang, NllbConfig{});
+}
+
+std::string nllb_600m::translate(const std::string& input_text,
+                                 const std::string& source_lang,
+                                 const std::string& target_lang,
+                                 const NllbConfig& config) {
+    if (!impl_ || !impl_->ok()) return {};
+    return impl_->translate_sync(input_text, source_lang, target_lang, config);
 }
 
 bool nllb_600m::translate(const std::string& input_text,
@@ -455,5 +332,14 @@ bool nllb_600m::translate(const std::string& input_text,
                           const std::string& target_lang,
                           std::function<void(const std::string&)> callback) {
     if (!impl_ || !impl_->ok()) return false;
-    return impl_->translate_stream(input_text, source_lang, target_lang, std::move(callback));
+    return impl_->translate_stream(input_text, source_lang, target_lang, NllbConfig{}, std::move(callback));
+}
+
+bool nllb_600m::translate(const std::string& input_text,
+                          const std::string& source_lang,
+                          const std::string& target_lang,
+                          const NllbConfig& config,
+                          std::function<void(const std::string&)> callback) {
+    if (!impl_ || !impl_->ok()) return false;
+    return impl_->translate_stream(input_text, source_lang, target_lang, config, std::move(callback));
 }

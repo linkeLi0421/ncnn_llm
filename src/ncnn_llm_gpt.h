@@ -20,6 +20,7 @@
 #include <net.h>
 #include <nlohmann/json.hpp>
 
+#include "ncnn_llm_base.h"
 #include "utils/tokenizer/bpe_tokenizer.h"
 #include "utils/rope_embed.h"
 #include "utils/prompt.h"
@@ -47,7 +48,7 @@ public:
     
     virtual std::shared_ptr<ncnn_llm_gpt_ctx> clone() const = 0;
     
-    std::vector<std::pair<ncnn::Mat, ncnn::Mat>> kv_cache;
+    KVCache kv_cache;
     int cur_token = 0;
     int position_id = 0;
 };

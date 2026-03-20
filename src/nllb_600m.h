@@ -4,6 +4,14 @@
 #include <memory>
 #include <string>
 
+struct NllbConfig {
+    float temperature = 1.0f;
+    int top_k = 0;
+    float top_p = 1.0f;
+    bool do_sample = false;
+    int max_steps = 512;
+};
+
 class nllb_600m {
 public:
     nllb_600m(std::string embed_param,
@@ -31,9 +39,20 @@ public:
                           const std::string& source_lang,
                           const std::string& target_lang);
 
+    std::string translate(const std::string& input_text,
+                          const std::string& source_lang,
+                          const std::string& target_lang,
+                          const NllbConfig& config);
+
     bool translate(const std::string& input_text,
                    const std::string& source_lang,
                    const std::string& target_lang,
+                   std::function<void(const std::string&)> callback);
+
+    bool translate(const std::string& input_text,
+                   const std::string& source_lang,
+                   const std::string& target_lang,
+                   const NllbConfig& config,
                    std::function<void(const std::string&)> callback);
 
 private:
