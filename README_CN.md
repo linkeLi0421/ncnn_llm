@@ -2,7 +2,7 @@
 
 英文版: [readme.md](readme.md)
 
-**ncnn_llm** 为 [ncnn](https://github.com/Tencent/ncnn) 框架提供大语言模型 (LLM) 支持。
+**ncnn_llm** 为 [ncnn](https://github.com/Tencent/ncnn) 框架提供大语言模型 (LLM) 和嵌入模型支持。
 
 ncnn 是一个为移动端和嵌入式设备深度优化的高性能神经网络推理框架。通过将 LLM 集成到 ncnn 中，本项目使得在资源受限的环境（边缘设备、手机、IoT）上运行复杂的自然语言处理任务成为可能。
 
@@ -27,11 +27,16 @@ ncnn 是一个为移动端和嵌入式设备深度优化的高性能神经网络
 
 *这些模型可以使用已实现的分词器和推理流程顺利运行。*
 
+**LLM 模型：**
 * **MiniCPM4**
 * **Qwen3**
 * **Qwen3.5**
 * **Qwen2.5-VL**
 * **NLLB** (No Language Left Behind)
+
+**嵌入模型：**
+* **Jina-Embeddings-v5-Text-Nano** - 文本嵌入模型 (768维)
+* **Jina-CLIP-v2** - 多模态嵌入模型 (文本+图像, 1024维)
 
 ### ⚠️ 可运行但存在问题
 
@@ -135,6 +140,131 @@ xmake run llm_ncnn_run --model ./assets/qwen3_0.6b
 
 ---
 
+## 🔤 嵌入模型（Embedding）
+
+本项目支持文本嵌入和多模态嵌入模型，提供统一的 `ncnn_embedding` 接口。
+
+### 支持的模型
+
+| 模型 | 类型 | 维度 | 说明 |
+|------|------|------|------|
+| Jina-Embeddings-v5-Text-Nano | 文本嵌入 | 768 | 多语言文本嵌入 |
+| Jina-CLIP-v2 | 多模态嵌入 | 1024 | 文本+图像嵌入 |
+
+### 构建
+
+```bash
+xmake build embedding_main
+xmake build clip_main
+```
+
+### 文本嵌入示例
+
+```bash
+xmake run embedding_main --model ./assets/jina-embeddings-v5-text-nano
+```
+
+输出示例：
+```text
+Text-Text Similarity Matrix:
+               今天天气.. 今天天气.. 我喜欢吃.. 我喜欢吃.. The weather ..
+今天天气.. 1.0000         0.7116         0.6915         0.6872         0.6823
+...
+```
+
+### CLIP 多模态嵌入示例
+
+```bash
+xmake run clip_main --model ./assets/jina_clip_v2 --image ./assets/ganyu.jpg
+```
+
+输出示例：
+```text
+Text-Image Similarity Matrix:
+                              assets/ganyu.jpg
+a cat                         0.0996
+a dog                         0.0595
+blue hair anime character     0.2720
+蓝色头发动漫角色              0.2823
+```
+
+### API 使用
+
+```cpp
+#include "ncnn_embedding.h"
+
+// 加载模型
+ncnn_embedding embed("./assets/jina_clip_v2", false, 4);
+
+// 文本编码
+std::vector<float> text_vec = embed.encode_text("Hello world");
+
+// 图像编码（仅 CLIP 模型）
+if (embed.supports_image()) {
+    std::vector<float> image_vec = embed.encode_image_file("./image.jpg");
+}
+
+// 计算相似度
+float similarity = cosine_similarity(text_vec, image_vec);
+```
+
+### model.json 配置格式
+
+**文本嵌入模型：**
+```json
+{
+    "model_type": "embedding",
+    "params": {
+        "encoder_param": "model.ncnn.param",
+        "encoder_bin": "model.ncnn.bin"
+    },
+    "tokenizer": {
+        "type": "bbpe",
+        "vocab_file": "vocab.txt",
+        "merges_file": "merges.txt"
+    },
+    "setting": {
+        "embed_dim": 768,
+        "rope": {
+            "type": "RoPE_full",
+            "rope_head_dim": 64,
+            "rope_theta": 1000000.0
+        }
+    }
+}
+```
+
+**CLIP 多模态模型：**
+```json
+{
+    "model_type": "clip",
+    "params": {
+        "text_encoder_param": "text.ncnn.param",
+        "text_encoder_bin": "text.ncnn.bin",
+        "vision_encoder_param": "vision.ncnn.param",
+        "vision_encoder_bin": "vision.ncnn.bin"
+    },
+    "tokenizer": {
+        "type": "unigram",
+        "vocab_file": "vocab.txt"
+    },
+    "setting": {
+        "text_embed_dim": 1024,
+        "vision_embed_dim": 1024,
+        "image_size": 512,
+        "image_mean": [0.485, 0.456, 0.406],
+        "image_std": [0.229, 0.224, 0.225],
+        "rope": {
+            "type": "RoPE_full",
+            "rope_head_dim": 64,
+            "rope_theta": 1000000.0
+        }
+    }
+}
+```
+
+---
+
 ## 📊 性能测试
 
 项目包含性能测试工具。
@@ -183,18 +313,21 @@ xmake run test_llm
 ncnn_llm/
 ├── src/                    # 核心库源码
 │   ├── ncnn_llm_gpt.cpp    # 主 LLM 推理实现
+│   ├── ncnn_embedding.cpp  # 嵌入模型实现
 │   ├── sampling.cpp        # Token 采样策略
 │   ├── nllb_600m.cpp       # NLLB 模型支持
 │   └── utils/              # 工具模块
 │       ├── tokenizer/      # 分词器实现 (BPE, Unigram)
+│       ├── image_utils.cpp # 图像处理工具
 │       ├── gdr.cpp         # GDR 支持
 │       ├── prompt.cpp      # Prompt 处理
 │       └── rope_embed.cpp  # RoPE 嵌入
 ├── examples/               # 示例应用
 │   ├── llm_ncnn_run/       # 统一 CLI 运行器
-│   ├── bytelevelbpe_main.cpp
-│   ├── nllb_main.cpp
-│   └── unigram_main.cpp
+│   ├── embedding_main.cpp  # 文本嵌入示例
+│   ├── clip_main.cpp       # CLIP 多模态嵌入示例
+│   ├── nllb_main.cpp       # NLLB 翻译示例
+│   └── unigram_main.cpp    # Unigram 分词器示例
 ├── benchmark/              # 性能基准测试
 │   └── benchllm.cpp
 ├── tests/                  # 单元测试

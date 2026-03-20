@@ -83,3 +83,19 @@ target("nllb_main")
     add_packages("ncnn")
 
     set_rundir("$(projectdir)/")
+
+target("embedding_main")
+    set_kind("binary")
+    add_files("examples/embedding_main.cpp")
+    add_deps("ncnn_llm")
+    add_packages("ncnn", "nlohmann_json")
+
+    set_rundir("$(projectdir)/")
+
+target("clip_main")
+    set_kind("binary")
+    add_files("examples/clip_main.cpp")
+    add_deps("ncnn_llm")
+    add_packages("ncnn", "nlohmann_json")
+
+    set_rundir("$(projectdir)/")
