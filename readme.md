@@ -17,6 +17,8 @@ The goal is to provide a complete pipeline, making it easier for developers to u
 > **⚠️ Important Note:**
 > ncnn's support for `kvcache` is currently in an **experimental stage**. You **must** compile ncnn from the `master` branch to ensure you have the latest features required for this project to run.
 
+> Decode Optmize is comming soon.
+
 ---
 
 ## 📊 Model Support Matrix
