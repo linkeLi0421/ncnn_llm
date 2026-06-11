@@ -50,7 +50,6 @@ end
 add_requires("ncnn master", {
     configs = {
         vulkan=true
-        vulkan=true
     }
 })
 
@@ -129,5 +128,4 @@ target("ocr_main")
     add_deps("ncnn_llm")
     add_packages("ncnn", "nlohmann_json")
 
-    set_rundir("$(projectdir)/")
     set_rundir("$(projectdir)/")
