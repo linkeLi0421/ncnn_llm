@@ -99,3 +99,11 @@ target("clip_main")
     add_packages("ncnn", "nlohmann_json")
 
     set_rundir("$(projectdir)/")
+
+target("ocr_main")
+    set_kind("binary")
+    add_files("examples/ocr_main.cpp")
+    add_deps("ncnn_llm")
+    add_packages("ncnn", "nlohmann_json")
+
+    set_rundir("$(projectdir)/")

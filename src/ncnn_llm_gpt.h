@@ -193,7 +193,5 @@ private:
     ncnn::Mat bgr_to_pixel_values(const ncnn::Mat& bgr) const;
     ncnn::Mat reorder_patches_for_merge(const ncnn::Mat& pixel_values, int h_patches, int w_patches, int merge_size = 2) const;
     void get_window_index(int num_patches_w, int num_patches_h, std::vector<int>& window_index, std::vector<int>& cu_window_seqlens) const;
-    static std::vector<float> compute_inv_freq(int dim, float theta = 10000.0f);
-    void generate_rope_embeds(int num_patches_w, int num_patches_h, ncnn::Mat& emb_cos, ncnn::Mat& emb_sin, int rope_dim) const;
     int get_visiual_features(const ncnn::Mat& bgr, ncnn::Mat& image_embeds, int& num_patches_w, int& num_patches_h) const;
 };

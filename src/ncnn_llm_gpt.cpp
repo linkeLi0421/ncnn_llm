@@ -1,5 +1,6 @@
 #include "ncnn_llm_gpt.h"
-#include "sampling.h"
+#include "ncnn_text_runtime.h"
+#include "utils/vision_rope.h"
 
 static std::shared_ptr<ncnn_llm_gpt_ctx> clone_ctx(const std::shared_ptr<ncnn_llm_gpt_ctx>& src) {
     return src->clone();
@@ -888,13 +889,7 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::generate(const std::shared_ptr<n
             callback(bpe->decode({ctx->cur_token}, false));
         }
 
-        ncnn::Mat cur_token_mat = ncnn::Mat(1, 1, (void*)&ctx->cur_token).clone();
-        ncnn::Mat cur_embed;
-        {
-            ncnn::Extractor ex = embed_net->create_extractor();
-            ex.input("in0", cur_token_mat);
-            ex.extract("out0", cur_embed);
-        }
+        ncnn::Mat cur_embed = llm_run_text_embed(*embed_net, ctx->cur_token);
 
         ncnn::Mat cos_cache, sin_cache;
         if (rope_type == RoPE_Type::LongRoPE) {
@@ -914,7 +909,11 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::generate(const std::shared_ptr<n
         mask.fill(0.f);
 
         ncnn::Mat decode_out;
-        {
+        auto qwen_ctx = std::dynamic_pointer_cast<qwen3_5_ctx>(ctx);
+        if (!qwen_ctx) {
+            decode_out = llm_run_decoder_with_kv(*decoder_net, cur_embed, mask, cos_cache, sin_cache,
+                                                 ctx->kv_cache, attn_cnt, false);
+        } else {
             ncnn::Extractor ex = decoder_net->create_extractor();
             ex.input("in0", cur_embed);
             ex.input("in1", mask);
@@ -929,18 +928,15 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::generate(const std::shared_ptr<n
                 ex.input(vname, ctx->kv_cache[i].second);
             }
 
-            auto qwen_ctx = std::dynamic_pointer_cast<qwen3_5_ctx>(ctx);
-            if (qwen_ctx) {
-                for (int i = 0; i < sconv_cnt; ++i) {
-                    char name[16];
-                    std::snprintf(name, sizeof(name), "cache_conv%d", i);
-                    ex.input(name, qwen_ctx->sconv_cache[i]);
-                }
-                for (int i = 0; i < gdr_cnt; ++i) {
-                    char name[16];
-                    std::snprintf(name, sizeof(name), "cache_gdr%d", i);
-                    ex.input(name, qwen_ctx->gdr_cache[i]);
-                }
+            for (int i = 0; i < sconv_cnt; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "cache_conv%d", i);
+                ex.input(name, qwen_ctx->sconv_cache[i]);
+            }
+            for (int i = 0; i < gdr_cnt; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "cache_gdr%d", i);
+                ex.input(name, qwen_ctx->gdr_cache[i]);
             }
 
             for (int i = 0; i < attn_cnt; ++i) {
@@ -953,52 +949,34 @@ std::shared_ptr<ncnn_llm_gpt_ctx> ncnn_llm_gpt::generate(const std::shared_ptr<n
                 ctx->kv_cache[i] = { std::move(k_cache), std::move(v_cache) };
             }
 
-            if (qwen_ctx) {
-                for (int i = 0; i < sconv_cnt; ++i) {
-                    char name[32];
-                    std::snprintf(name, sizeof(name), "out_cache_conv%d", i);
-                    ncnn::Mat cache;
-                    ex.extract(name, cache);
-                    qwen_ctx->sconv_cache[i] = std::move(cache);
-                }
-                for (int i = 0; i < gdr_cnt; ++i) {
-                    char name[32];
-                    std::snprintf(name, sizeof(name), "out_cache_gdr%d", i);
-                    ncnn::Mat cache;
-                    ex.extract(name, cache);
-                    qwen_ctx->gdr_cache[i] = std::move(cache);
-                }
+            for (int i = 0; i < sconv_cnt; ++i) {
+                char name[32];
+                std::snprintf(name, sizeof(name), "out_cache_conv%d", i);
+                ncnn::Mat cache;
+                ex.extract(name, cache);
+                qwen_ctx->sconv_cache[i] = std::move(cache);
+            }
+            for (int i = 0; i < gdr_cnt; ++i) {
+                char name[32];
+                std::snprintf(name, sizeof(name), "out_cache_gdr%d", i);
+                ncnn::Mat cache;
+                ex.extract(name, cache);
+                qwen_ctx->gdr_cache[i] = std::move(cache);
             }
 
             ex.extract("out0", decode_out);
         }
 
-        ncnn::Mat logits_mat;
-        {
-            ncnn::Extractor ex = proj_out_net->create_extractor();
-            ex.input("in0", decode_out);
-            ex.extract("out0", logits_mat);
-        }
+        ncnn::Mat logits_mat = llm_run_lm_head(*proj_out_net, decode_out);
 
-        std::vector<float> logits(vocab_size);
-        memcpy(logits.data(), logits_mat.data, sizeof(float) * vocab_size);
-
-        for (int t : history) {
-            if (t >= vocab_size) continue;
-            if (logits[t] < 0) logits[t] *= cfg.repetition_penalty;
-            else logits[t] /= cfg.repetition_penalty;
-        }
-
-        softmax_vec(logits, cfg.temperature);
-        if (cfg.top_k > 0) apply_top_k(logits, cfg.top_k);
-        if (cfg.top_p < 1.0f) apply_top_p(logits, cfg.top_p);
-
-        int next_id;
-        if (cfg.do_sample == 1) {
-            next_id = sample_from_probs(logits);
-        } else {
-            next_id = std::max_element(logits.begin(), logits.end()) - logits.begin();
-        }
+        LlmTokenSampleConfig sample_cfg;
+        sample_cfg.vocab_size = vocab_size;
+        sample_cfg.temperature = cfg.temperature;
+        sample_cfg.top_p = cfg.top_p;
+        sample_cfg.top_k = cfg.top_k;
+        sample_cfg.repetition_penalty = cfg.repetition_penalty;
+        sample_cfg.do_sample = cfg.do_sample;
+        int next_id = llm_select_next_token(logits_mat, history, sample_cfg);
 
         ctx->cur_token = next_id;
         history.insert(next_id);
@@ -1177,66 +1155,6 @@ void ncnn_llm_gpt::get_window_index(int num_patches_w, int num_patches_h, std::v
     }
 }
 
-std::vector<float> ncnn_llm_gpt::compute_inv_freq(int dim, float theta) {
-    int num_freqs = dim / 2;
-    std::vector<float> inv_freq(num_freqs);
-    for (int i = 0; i < num_freqs; i++) {
-        float exp_val = (float)(i * 2) / (float)dim;
-        inv_freq[i] = 1.0f / std::pow(theta, exp_val);
-    }
-    return inv_freq;
-}
-
-void ncnn_llm_gpt::generate_rope_embeds(int num_patches_w, int num_patches_h, ncnn::Mat& emb_cos, ncnn::Mat& emb_sin, int rope_dim) const {
-    int seq_len = num_patches_w * num_patches_h;
-    std::vector<float> inv_freq = compute_inv_freq(rope_dim);
-    int half_dim = inv_freq.size();
-    int output_dim = half_dim * 4;
-
-    emb_cos.create(output_dim, seq_len, sizeof(float));
-    emb_sin.create(output_dim, seq_len, sizeof(float));
-
-    int idx = 0;
-    int grid_h = num_patches_h / spatial_merge_size;
-    int grid_w = num_patches_w / spatial_merge_size;
-
-    for (int gh = 0; gh < grid_h; gh++) {
-        for (int gw = 0; gw < grid_w; gw++) {
-            for (int bi = 0; bi < spatial_merge_size; bi++) {
-                for (int bj = 0; bj < spatial_merge_size; bj++) {
-                    int current_h = gh * spatial_merge_size + bi;
-                    int current_w = gw * spatial_merge_size + bj;
-
-                    float* cos_ptr = emb_cos.row(idx);
-                    float* sin_ptr = emb_sin.row(idx);
-
-                    for (int k = 0; k < half_dim; k++) {
-                        float freq = inv_freq[k];
-                        float angle_h = (float)current_h * freq;
-                        float angle_w = (float)current_w * freq;
-
-                        int idx_h1 = k;
-                        int idx_w1 = half_dim + k;
-                        int idx_h2 = 2 * half_dim + k;
-                        int idx_w2 = 3 * half_dim + k;
-
-                        float ch = std::cos(angle_h);
-                        float sh = std::sin(angle_h);
-                        float cw = std::cos(angle_w);
-                        float sw = std::sin(angle_w);
-
-                        cos_ptr[idx_h1] = ch; sin_ptr[idx_h1] = sh;
-                        cos_ptr[idx_h2] = ch; sin_ptr[idx_h2] = sh;
-                        cos_ptr[idx_w1] = cw; sin_ptr[idx_w1] = sw;
-                        cos_ptr[idx_w2] = cw; sin_ptr[idx_w2] = sw;
-                    }
-                    idx++;
-                }
-            }
-        }
-    }
-}
-
 int ncnn_llm_gpt::get_visiual_features(const ncnn::Mat& bgr, ncnn::Mat& image_embeds, int& num_patches_w, int& num_patches_h) const {
     if (ncnn_mat_empty(bgr)) {
         image_embeds.release();
@@ -1299,7 +1217,8 @@ int ncnn_llm_gpt::get_visiual_features(const ncnn::Mat& bgr, ncnn::Mat& image_em
         pos_embeds = reorder_patches_for_merge(pos_embeds, num_patches_h, num_patches_w, spatial_merge_size);
 
         ncnn::Mat emb_cos, emb_sin;
-        generate_rope_embeds(num_patches_w, num_patches_h, emb_cos, emb_sin, 32);
+        generate_vision_rope_cache_2d(num_patches_h, num_patches_w, spatial_merge_size,
+                                      10000.0f, {16, 16}, true, emb_cos, emb_sin);
 
         {
             ncnn::Extractor ex = vision_encoder->create_extractor();
@@ -1313,7 +1232,8 @@ int ncnn_llm_gpt::get_visiual_features(const ncnn::Mat& bgr, ncnn::Mat& image_em
     }
 
     ncnn::Mat emb_cos, emb_sin;
-    generate_rope_embeds(num_patches_w, num_patches_h, emb_cos, emb_sin, 40);
+    generate_vision_rope_cache_2d(num_patches_h, num_patches_w, spatial_merge_size,
+                                  10000.0f, {20, 20}, true, emb_cos, emb_sin);
 
     ncnn::Mat patch_embeds_reordered(patch_embeds.w, seq_len, sizeof(float));
     ncnn::Mat emb_cos_reordered(emb_cos.w, seq_len, sizeof(float));
