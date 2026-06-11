@@ -1,374 +1,302 @@
-# ncnn_llm
+<p align="center">
+  <img src="logo.png" alt="ncnn_llm" width="220">
+</p>
 
-英文版: [readme.md](readme.md)
+<h1 align="center">ncnn_llm</h1>
 
-**ncnn_llm** 为 [ncnn](https://github.com/Tencent/ncnn) 框架提供大语言模型 (LLM) 和嵌入模型支持。
+<p align="center">
+  <b>基于 ncnn 的 LLM、VLM、OCR、翻译和嵌入模型推理运行时。</b>
+</p>
 
-ncnn 是一个为移动端和嵌入式设备深度优化的高性能神经网络推理框架。通过将 LLM 集成到 ncnn 中，本项目使得在资源受限的环境（边缘设备、手机、IoT）上运行复杂的自然语言处理任务成为可能。
+<p align="center">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+  <img alt="Build" src="https://img.shields.io/badge/build-xmake-4c8eda">
+  <img alt="Backend" src="https://img.shields.io/badge/backend-ncnn-orange">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Android-lightgrey">
+</p>
 
----
-
-## 🚀 项目起源
-
-本项目源自 **nihui** 为 ncnn 实现的 `kvcache` 功能，这为在 ncnn 上运行 LLM 打开了大门。受开源精神鼓舞，本仓库将该功能整理并扩展为一个独立项目。
-
-目标是提供完整的流水线，方便开发者在 ncnn 上使用 LLM，并推动生态建设。
-
-> **⚠️ 重要提示：**
-> ncnn 对 `kvcache` 的支持目前仍处于 **实验阶段**。你 **必须** 从 `master` 分支编译 ncnn，以确保具备运行本项目所需的最新特性。
-
----
-
-## 📊 模型支持矩阵
-
-项目仍在积极开发中。以下是当前模型兼容性状态。
-
-### ✅ 完全支持
-
-*这些模型可以使用已实现的分词器和推理流程顺利运行。*
-
-**LLM 模型：**
-* **MiniCPM4**
-* **Qwen3**
-* **Qwen3.5**
-* **Qwen2.5-VL**
-* **NLLB** (No Language Left Behind)
-
-**嵌入模型：**
-* **Jina-Embeddings-v5-Text-Nano** - 文本嵌入模型 (768维)
-* **Jina-CLIP-v2** - 多模态嵌入模型 (文本+图像, 1024维)
-
-### ⚠️ 可运行但存在问题
-
-*这些模型可以加载并运行，但可能存在 bug 或性能欠佳。*
-
-* (暂无)
-
-### 🚧 理论支持（开发中）
-
-*这些模型理论上可以工作，但在当前版本中仍失败或未验证。*
-
-* TinyLlama-1.1B-Chat-v1.0
-* Qwen2.5-0.5B
-* Llama-3.2-1B-Instruct
-* DeepSeek-R1-Distill-Qwen-1.5b
-
-### 🔜 即将支持
-
-* PaddleOCR-VL
+<p align="center">
+  <a href="readme.md">English</a>
+  ·
+  <a href="#快速开始">快速开始</a>
+  ·
+  <a href="#支持模型">支持模型</a>
+  ·
+  <a href="#模型库">模型库</a>
+</p>
 
 ---
 
-## 🛠️ 构建与使用
+`ncnn_llm` 提供一个轻量级 C++ 运行时，用于在 [ncnn](https://github.com/Tencent/ncnn) 上运行语言模型和嵌入模型。项目关注可落地的本地推理场景，包括边缘设备、桌面 CPU 和支持 Vulkan 的 GPU。
 
-本项目使用 `xmake` 构建。
+本项目源自 **nihui** 对 ncnn `kvcache` 的实验性工作，并在此基础上扩展出可复用的示例、模型加载、分词器、视觉预处理、OCR 推理和嵌入模型 API。
 
-### 依赖项
+## 特性
 
-- **xmake** - 构建系统
-- **ncnn** (master 分支) - 神经网络推理框架
-- **OpenCV** (可选) - 用于视觉语言模型支持
-- **nlohmann_json** - JSON 库
+- 统一的聊天和视觉语言模型 CLI 示例
+- 支持 KV cache 的自回归解码，可运行在 CPU 或 Vulkan 后端
+- 支持 Qwen / MiniCPM 风格的 LLM
+- 支持 Qwen VL 图文输入
+- 提供 GLM-OCR 图像文字识别示例
+- 提供 NLLB 翻译示例
+- 提供文本嵌入和多模态嵌入 API
+- 支持 BPE 和 Unigram 分词器
+- 使用 xmake 构建，示例程序保持小而独立
 
-### 1. 克隆仓库
+## 支持模型
+
+| 类别 | 模型 | 状态 | 说明 |
+| --- | --- | --- | --- |
+| LLM | YoutuLLM | 已支持 | 聊天 / 文本生成 |
+| LLM | MiniCPM4 | 已支持 | 聊天 / 文本生成 |
+| LLM | Qwen3 | 已支持 | 聊天 / 文本生成 |
+| VLM | Qwen3.5 | 已支持 | 图像 + 文本输入 |
+| VLM | Qwen2.5-VL | 已支持 | 图像 + 文本输入 |
+| OCR | GLM-OCR | 已支持 | OCR |
+| 翻译 | NLLB | 已支持 | 翻译示例 |
+| 嵌入 | Jina-Embeddings-v5-Text-Nano | 已支持 | 768 维文本嵌入 |
+| 嵌入 | Jina-CLIP-v2 | 已支持 | 1024 维文本 + 图像嵌入 |
+
+## 快速开始
+
+### 1. 依赖
+
+- `xmake`
+- 从 `master` 分支构建的 ncnn
+
+### 2. 克隆仓库
 
 ```bash
 git clone https://github.com/futz12/ncnn_llm.git
 cd ncnn_llm
 ```
 
-### 2. 构建
+### 3. 构建
 
 ```bash
 xmake build
 ```
 
-### 3. 运行（示例：llm_ncnn_run）
-
-运行前请确保已下载模型权重（见下文）。
-
-```bash
-xmake run llm_ncnn_run --model ./assets/qwen3_0.6b
-```
-
-### 命令行选项
-
-| 选项 | 描述 |
-|------|------|
-| `--model` | 模型目录路径（必需） |
-| `--threads` | 线程数（默认：自动） |
-| `--vulkan` | 启用 Vulkan GPU 加速 |
-| `--vulkan-device` | 指定 Vulkan 设备 ID |
-| `--image` | 图像文件路径（用于 VL 模型） |
-| `--builtin-tools` | 启用内置工具 |
-
-### 示例输出
-
-```text
-Chat with Qwen3-0.6B! Type 'exit' or 'quit' to end the conversation.
-User: Hello
-Assistant: 
-Hello! How can I assist you today?
-User: What is OpenCV?
-Assistant: OpenCV (Open Source Computer Vision Library) is an open-source computer vision and machine learning software library...
-```
-
----
-
-## 🚀 llm_ncnn_run（CLI）
-
-`llm_ncnn_run` 是一个统一示例，支持：
-- CLI 对话模式
-- 内置工具（random/add）
-- 视觉语言模型支持（需要 OpenCV）
-
-### 构建
+只构建单个 target：
 
 ```bash
 xmake build llm_ncnn_run
 ```
 
-### 运行
+### 4. 下载模型
+
+从下面的镜像下载已转换的 ncnn 模型目录：
+
+https://mirrors.sdu.edu.cn/ncnn_modelzoo/
+
+将模型目录放到 `assets/` 下，例如：
+
+```text
+assets/
+└── qwen3_0.6b/
+    ├── model.json
+    ├── *.ncnn.param
+    ├── *.ncnn.bin
+    └── tokenizer files
+```
+
+## CLI 聊天
+
+`llm_ncnn_run` 是主要的交互式示例，支持文本模型和视觉语言模型。
 
 ```bash
 xmake run llm_ncnn_run --model ./assets/qwen3_0.6b
 ```
 
-说明：
-- 模型路径必须是包含模型文件的有效目录。
-- 从 https://mirrors.sdu.edu.cn/ncnn_modelzoo/ 下载模型
+指定运行参数：
 
----
+```bash
+xmake run llm_ncnn_run --model ./assets/qwen3_0.6b --threads 4
+xmake run llm_ncnn_run --model ./assets/qwen3_0.6b --vulkan --vulkan-device 0
+```
 
-## 🔤 嵌入模型（Embedding）
+视觉语言输入：
 
-本项目支持文本嵌入和多模态嵌入模型，提供统一的 `ncnn_embedding` 接口。
+```bash
+xmake run llm_ncnn_run --model ./assets/qwen2.5_vl_3b --image ./assets/test.jpg
+```
 
-### 支持的模型
+### CLI 选项
 
-| 模型 | 类型 | 维度 | 说明 |
-|------|------|------|------|
-| Jina-Embeddings-v5-Text-Nano | 文本嵌入 | 768 | 多语言文本嵌入 |
-| Jina-CLIP-v2 | 多模态嵌入 | 1024 | 文本+图像嵌入 |
+| 选项 | 说明 |
+| --- | --- |
+| `--model` | 模型目录 |
+| `--threads` | CPU 线程数 |
+| `--vulkan` | 启用 Vulkan 计算 |
+| `--vulkan-device` | Vulkan 设备编号 |
+| `--image` | VLM 输入图像路径 |
+| `--builtin-tools` | 启用内置演示工具 |
 
-### 构建
+示例会话：
+
+```text
+llm_ncnn_run (cli). Type 'exit' or 'quit' to end the conversation.
+User: Hello
+Assistant: Hello! How can I help you today?
+```
+
+## OCR
+
+GLM-OCR 使用专用的图像 prefill 路径，并复用共享文本解码运行时。
+
+```bash
+xmake build ocr_main
+xmake run ocr_main --model ./assets/glm_ocr --image ./test_ocr.png --prompt "Read the text in the image."
+```
+
+输出示例：
+
+```text
+Generating text:
+Hello World 123
+```
+
+## 嵌入模型
+
+`ncnn_embedding` 为文本嵌入和 CLIP 风格的图文嵌入提供统一 API。
+
+### 文本嵌入
 
 ```bash
 xmake build embedding_main
-xmake build clip_main
-```
-
-### 文本嵌入示例
-
-```bash
 xmake run embedding_main --model ./assets/jina-embeddings-v5-text-nano
 ```
 
-输出示例：
-```text
-Text-Text Similarity Matrix:
-               今天天气.. 今天天气.. 我喜欢吃.. 我喜欢吃.. The weather ..
-今天天气.. 1.0000         0.7116         0.6915         0.6872         0.6823
-...
-```
-
-### CLIP 多模态嵌入示例
+### CLIP 多模态嵌入
 
 ```bash
+xmake build clip_main
 xmake run clip_main --model ./assets/jina_clip_v2 --image ./assets/ganyu.jpg
 ```
 
-输出示例：
-```text
-Text-Image Similarity Matrix:
-                              assets/ganyu.jpg
-a cat                         0.0996
-a dog                         0.0595
-blue hair anime character     0.2720
-蓝色头发动漫角色              0.2823
-```
-
-### API 使用
+### C++ API
 
 ```cpp
 #include "ncnn_embedding.h"
 
-// 加载模型
 ncnn_embedding embed("./assets/jina_clip_v2", false, 4);
 
-// 文本编码
 std::vector<float> text_vec = embed.encode_text("Hello world");
 
-// 图像编码（仅 CLIP 模型）
 if (embed.supports_image()) {
     std::vector<float> image_vec = embed.encode_image_file("./image.jpg");
-}
-
-// 计算相似度
-float similarity = cosine_similarity(text_vec, image_vec);
-```
-
-### model.json 配置格式
-
-**文本嵌入模型：**
-```json
-{
-    "model_type": "embedding",
-    "params": {
-        "encoder_param": "model.ncnn.param",
-        "encoder_bin": "model.ncnn.bin"
-    },
-    "tokenizer": {
-        "type": "bbpe",
-        "vocab_file": "vocab.txt",
-        "merges_file": "merges.txt"
-    },
-    "setting": {
-        "embed_dim": 768,
-        "rope": {
-            "type": "RoPE_full",
-            "rope_head_dim": 64,
-            "rope_theta": 1000000.0
-        }
-    }
+    float score = cosine_similarity(text_vec, image_vec);
 }
 ```
 
-**CLIP 多模态模型：**
-```json
-{
-    "model_type": "clip",
-    "params": {
-        "text_encoder_param": "text.ncnn.param",
-        "text_encoder_bin": "text.ncnn.bin",
-        "vision_encoder_param": "vision.ncnn.param",
-        "vision_encoder_bin": "vision.ncnn.bin"
-    },
-    "tokenizer": {
-        "type": "unigram",
-        "vocab_file": "vocab.txt"
-    },
-    "setting": {
-        "text_embed_dim": 1024,
-        "vision_embed_dim": 1024,
-        "image_size": 512,
-        "image_mean": [0.485, 0.456, 0.406],
-        "image_std": [0.229, 0.224, 0.225],
-        "rope": {
-            "type": "RoPE_full",
-            "rope_head_dim": 64,
-            "rope_theta": 1000000.0
-        }
-    }
-}
-```
+## 其他示例
 
----
+| Target | 用途 |
+| --- | --- |
+| `llm_ncnn_run` | 统一聊天 / VLM CLI |
+| `ocr_main` | GLM-OCR 推理 |
+| `embedding_main` | 文本嵌入推理 |
+| `clip_main` | CLIP 图文嵌入推理 |
+| `nllb_main` | NLLB 翻译示例 |
+| `unigram_main` | Unigram 分词器示例 |
+| `benchllm` | LLM 性能测试 |
+| `test_llm` | 单元测试 |
 
-## 📊 性能测试
-
-项目包含性能测试工具。
-
-### 构建
-
-```bash
-xmake build benchllm
-```
-
-### 运行
-
-```bash
-xmake run benchllm [loop_count] [num_threads] [powersave] [gpu_device] [cooling_down] [seqlen]
-```
-
-### 参数说明
-
-| 参数 | 默认值 | 描述 |
-|------|--------|------|
-| `loop_count` | 4 | 基准测试迭代次数 |
-| `num_threads` | 自动 | CPU 线程数 |
-| `powersave` | 2 | CPU 省电模式 (0-2) |
-| `gpu_device` | -1 | Vulkan 设备 ID（-1 表示仅 CPU） |
-| `cooling_down` | 1 | 测试间启用冷却 |
-| `seqlen` | 233 | 基准测试序列长度 |
-
----
-
-## 🧪 测试
-
-项目包含单元测试。
-
-### 构建并运行测试
+构建并运行测试：
 
 ```bash
 xmake build test_llm
 xmake run test_llm
 ```
 
----
+运行 benchmark：
 
-## 📁 项目结构
-
+```bash
+xmake build benchllm
+xmake run benchllm [loop_count] [num_threads] [powersave] [gpu_device] [cooling_down] [seqlen]
 ```
+
+## 模型库
+
+已转换的 ncnn 模型权重可从下面的镜像下载：
+
+https://mirrors.sdu.edu.cn/ncnn_modelzoo/
+
+每个模型目录应包含 `model.json`、ncnn param/bin 文件和分词器文件。可以将模型目录放在 `assets/` 下，也可以通过 `--model` 直接传入路径。
+
+## 配置
+
+每个模型目录都由 `model.json` 描述。不同模型族的字段会有差异，一个典型文本模型配置如下：
+
+```json
+{
+  "model_type": "llm",
+  "params": {
+    "embed_param": "embed.ncnn.param",
+    "embed_bin": "embed.ncnn.bin",
+    "decoder_param": "decoder.ncnn.param",
+    "decoder_bin": "decoder.ncnn.bin",
+    "lm_head_param": "lm_head.ncnn.param",
+    "lm_head_bin": "lm_head.ncnn.bin"
+  },
+  "tokenizer": {
+    "type": "bbpe",
+    "vocab_file": "vocab.txt",
+    "merges_file": "merges.txt"
+  },
+  "setting": {
+    "attn_cnt": 32,
+    "hidden_size": 1024,
+    "rope": {
+      "type": "RoPE",
+      "rope_head_dim": 64,
+      "rope_theta": 1000000.0
+    }
+  }
+}
+```
+
+嵌入模型和 OCR 模型使用各自的 `model_type` 和参数区段。具体写法可以参考 `assets/` 下的模型文件。
+
+## 项目结构
+
+```text
 ncnn_llm/
-├── src/                    # 核心库源码
-│   ├── ncnn_llm_gpt.cpp    # 主 LLM 推理实现
-│   ├── ncnn_embedding.cpp  # 嵌入模型实现
-│   ├── sampling.cpp        # Token 采样策略
-│   ├── nllb_600m.cpp       # NLLB 模型支持
-│   └── utils/              # 工具模块
-│       ├── tokenizer/      # 分词器实现 (BPE, Unigram)
-│       ├── image_utils.cpp # 图像处理工具
-│       ├── gdr.cpp         # GDR 支持
-│       ├── prompt.cpp      # Prompt 处理
-│       └── rope_embed.cpp  # RoPE 嵌入
-├── examples/               # 示例应用
-│   ├── llm_ncnn_run/       # 统一 CLI 运行器
+├── assets/                 # 本地模型目录和演示资源
+├── benchmark/              # Benchmark 入口
+├── examples/               # CLI 和功能示例
+│   ├── llm_ncnn_run/       # 统一聊天 / VLM 运行器
+│   ├── ocr_main.cpp        # OCR 示例
 │   ├── embedding_main.cpp  # 文本嵌入示例
-│   ├── clip_main.cpp       # CLIP 多模态嵌入示例
-│   ├── nllb_main.cpp       # NLLB 翻译示例
-│   └── unigram_main.cpp    # Unigram 分词器示例
-├── benchmark/              # 性能基准测试
-│   └── benchllm.cpp
+│   ├── clip_main.cpp       # CLIP 示例
+│   └── nllb_main.cpp       # 翻译示例
+├── export/                 # 导出脚本
+├── src/                    # 核心运行时
+│   ├── ncnn_llm_gpt.*      # LLM / VLM 运行时
+│   ├── ncnn_llm_ocr.*      # OCR 图像 prefill + 共享解码
+│   ├── ncnn_embedding.*    # 嵌入模型运行时
+│   ├── ncnn_text_runtime.* # 共享文本解码辅助函数
+│   └── utils/              # 分词器、图像、RoPE、prompt 工具
 ├── tests/                  # 单元测试
-│   └── test_llm.cpp
-├── export/                 # 模型导出脚本
-│   └── nllb_export.py
-└── xmake.lua              # 构建配置
+└── xmake.lua               # 构建配置
 ```
 
----
+## 路线图
 
-## 📥 模型库
+- 保持 decoder 和 KV cache 运行时在不同模型族之间共享
+- 扩展更多模型架构和分词器支持
+- 提升 Vulkan 和 CPU 推理性能
+- 增加 INT8 量化支持
+- 更完整地文档化模型导出流程
 
-你可以从以下镜像下载已转换的 ncnn 模型权重：
+随着运行时演进，旧导出脚本可能会过时。建议优先参考最新模型示例和 `model.json` 文件。
 
-🔗 **[ncnn 模型库镜像](https://mirrors.sdu.edu.cn/ncnn_modelzoo/)**
+## 社区
 
----
+欢迎提交 issue、修复、转换模型和测试结果。
 
-## 🔮 路线图
+- QQ 群：`767178345`
 
-我们将持续改进 ncnn_llm，未来计划包括：
+## 许可证
 
-* **上游优化：** 向 ncnn 上游提交优化补丁，提升核心 LLM 支持。
-* **支持扩展：** 增加更多模型架构与分词器支持。
-* **性能：** 优化推理速度并降低内存占用。
-* **INT8 量化：** 实现 INT8 量化支持。
-* **文档：** 完善导出流水线文档并增加更多 C++ 使用示例。
-
-*注：虽然我们提供完整的导出流水线，但旧的流程可能会随库演进而过时。请参考最新示例代码进行调整。*
-
----
-
-## 🤝 社区与联系
-
-欢迎大家关注并参与本项目，共同推动 ncnn 在大语言模型领域的发展！
-
-* **QQ群：** `767178345`
-
----
-
-## 📝 许可证
-
-Apache 2.0
+Apache License 2.0。详见 [LICENSE](LICENSE)。

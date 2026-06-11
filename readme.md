@@ -1,374 +1,302 @@
-# ncnn_llm
+<p align="center">
+  <img src="logo.png" alt="ncnn_llm" width="220">
+</p>
 
-中文版: [README_CN](README_CN.md)
+<h1 align="center">ncnn_llm</h1>
 
-**ncnn_llm** provides Large Language Model (LLM) and embedding model support for the [ncnn](https://github.com/Tencent/ncnn) framework.
+<p align="center">
+  <b>LLM, VLM, OCR, translation, and embedding inference on top of ncnn.</b>
+</p>
 
-ncnn is a high-performance neural network inference framework specifically optimized for mobile and embedded devices. By integrating LLMs into ncnn, this project enables the execution of complex natural language processing tasks in resource-constrained environments (edge devices, mobile phones, IoT).
+<p align="center">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+  <img alt="Build" src="https://img.shields.io/badge/build-xmake-4c8eda">
+  <img alt="Backend" src="https://img.shields.io/badge/backend-ncnn-orange">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Android-lightgrey">
+</p>
 
----
-
-## 🚀 Project Origin
-
-This project originated from **nihui's** implementation of the `kvcache` feature for ncnn, which opened the door for running LLMs on the framework. Motivated by the spirit of open-source contribution, this repository organizes and expands upon that functionality into an independent project.
-
-The goal is to provide a complete pipeline, making it easier for developers to use LLMs on ncnn and contribute to the ecosystem.
-
-> **⚠️ Important Note:**
-> ncnn's support for `kvcache` is currently in an **experimental stage**. You **must** compile ncnn from the `master` branch to ensure you have the latest features required for this project to run.
-
----
-
-## 📊 Model Support Matrix
-
-The project is currently in active development. Below is the current compatibility status of various models.
-
-### ✅ Perfectly Supported
-
-*These models run smoothly with the implemented tokenizer and inference pipeline.*
-
-**LLM Models:**
-* **MiniCPM4**
-* **Qwen3**
-* **Qwen3.5**
-* **Qwen2.5-VL**
-* **NLLB** (No Language Left Behind)
-
-**Embedding Models:**
-* **Jina-Embeddings-v5-Text-Nano** - Text embedding model (768-dim)
-* **Jina-CLIP-v2** - Multimodal embedding model (text+image, 1024-dim)
-
-### ⚠️ Running with Issues
-
-*These models can be loaded and run, but may experience bugs or suboptimal performance.*
-
-* (None currently)
-
-### 🚧 Theoretical Support (Work in Progress)
-
-*These models should theoretically work but are currently failing or unverified in the current build.*
-
-* TinyLlama-1.1B-Chat-v1.0
-* Qwen2.5-0.5B
-* Llama-3.2-1B-Instruct
-* DeepSeek-R1-Distill-Qwen-1.5b
-
-### 🔜 Coming Soon
-
-* PaddleOCR-VL
+<p align="center">
+  <a href="README_CN.md">中文文档</a>
+  ·
+  <a href="#quick-start">Quick Start</a>
+  ·
+  <a href="#supported-models">Supported Models</a>
+  ·
+  <a href="#model-zoo">Model Zoo</a>
+</p>
 
 ---
 
-## 🛠️ Build and Usage
+`ncnn_llm` provides a lightweight C++ runtime for running language models and embedding models with [ncnn](https://github.com/Tencent/ncnn). It focuses on practical local inference for edge devices, desktop CPU, and Vulkan-capable GPUs.
 
-This project uses `xmake` for building.
+The project started from **nihui's** experimental ncnn `kvcache` work and expands it into reusable examples, model loaders, tokenizers, vision preprocessing, OCR inference, and embedding APIs.
 
-### Prerequisites
+## Highlights
 
-- **xmake** - Build system
-- **ncnn** (master branch) - Neural network inference framework
-- **OpenCV** (optional) - For vision-language model support
-- **nlohmann_json** - JSON library
+- Unified CLI runner for chat and vision-language models
+- KV-cache autoregressive decoding with CPU and optional Vulkan execution
+- Qwen / MiniCPM style LLM support
+- Qwen VL image input support
+- GLM-OCR image-to-text example
+- NLLB translation example
+- Text and multimodal embedding APIs
+- BPE and Unigram tokenizer support
+- xmake-based build with small standalone examples
 
-### 1. Clone the Repository
+## Supported Models
+
+| Category | Model | Status | Notes |
+| --- | --- | --- | --- |
+| LLM | YoutuLLM | Supported | Chat / text generation |
+| LLM | MiniCPM4 | Supported | Chat / text generation |
+| LLM | Qwen3 | Supported | Chat / text generation |
+| VLM | Qwen3.5 | Supported | Image + text input |
+| VLM | Qwen2.5-VL | Supported | Image + text input |
+| OCR | GLM-OCR | Supported | OCR |
+| Translation | NLLB | Supported | Translation example |
+| Embedding | Jina-Embeddings-v5-Text-Nano | Supported | 768-dim text embeddings |
+| Embedding | Jina-CLIP-v2 | Supported | 1024-dim text + image embeddings |
+
+## Quick Start
+
+### 1. Requirements
+
+- `xmake`
+- ncnn built from `master`
+
+### 2. Clone
 
 ```bash
 git clone https://github.com/futz12/ncnn_llm.git
 cd ncnn_llm
 ```
 
-### 2. Build
+### 3. Build
 
 ```bash
 xmake build
 ```
 
-### 3. Run (Example: llm_ncnn_run)
-
-Ensure you have downloaded the model weights (see below) before running.
-
-```bash
-xmake run llm_ncnn_run --model ./assets/qwen3_0.6b
-```
-
-### Command Line Options
-
-| Option | Description |
-|--------|-------------|
-| `--model` | Path to model directory (required) |
-| `--threads` | Number of threads (default: auto) |
-| `--vulkan` | Enable Vulkan GPU acceleration |
-| `--vulkan-device` | Specify Vulkan device ID |
-| `--image` | Path to image file (for VL models) |
-| `--builtin-tools` | Enable built-in tools |
-
-### Example Output
-
-```text
-Chat with Qwen3-0.6B! Type 'exit' or 'quit' to end the conversation.
-User: Hello
-Assistant: 
-Hello! How can I assist you today?
-User: What is OpenCV?
-Assistant: OpenCV (Open Source Computer Vision Library) is an open-source computer vision and machine learning software library...
-```
-
----
-
-## 🚀 llm_ncnn_run (CLI)
-
-`llm_ncnn_run` is a unified example that supports:
-- CLI chat mode
-- Built-in tools (random/add)
-- Vision-language model support (with OpenCV)
-
-### Build
+Build a single target:
 
 ```bash
 xmake build llm_ncnn_run
 ```
 
-### Run
+### 4. Download Models
+
+Download converted ncnn model directories from the mirror:
+
+https://mirrors.sdu.edu.cn/ncnn_modelzoo/
+
+Put the model directory under `assets/`, for example:
+
+```text
+assets/
+└── qwen3_0.6b/
+    ├── model.json
+    ├── *.ncnn.param
+    ├── *.ncnn.bin
+    └── tokenizer files
+```
+
+## CLI Chat
+
+`llm_ncnn_run` is the main interactive example for text and vision-language models.
 
 ```bash
 xmake run llm_ncnn_run --model ./assets/qwen3_0.6b
 ```
 
-Notes:
-- Model path must be a valid directory containing model files.
-- Download models from https://mirrors.sdu.edu.cn/ncnn_modelzoo/
+With explicit runtime options:
 
----
+```bash
+xmake run llm_ncnn_run --model ./assets/qwen3_0.6b --threads 4
+xmake run llm_ncnn_run --model ./assets/qwen3_0.6b --vulkan --vulkan-device 0
+```
 
-## 🔤 Embedding Models
+Vision-language input:
 
-This project supports text embedding and multimodal embedding models with a unified `ncnn_embedding` interface.
+```bash
+xmake run llm_ncnn_run --model ./assets/qwen2.5_vl_3b --image ./assets/test.jpg
+```
 
-### Supported Models
+### CLI Options
 
-| Model | Type | Dimension | Description |
-|-------|------|-----------|-------------|
-| Jina-Embeddings-v5-Text-Nano | Text Embedding | 768 | Multilingual text embedding |
-| Jina-CLIP-v2 | Multimodal Embedding | 1024 | Text + Image embedding |
+| Option | Description |
+| --- | --- |
+| `--model` | Model directory |
+| `--threads` | CPU thread count |
+| `--vulkan` | Enable Vulkan compute |
+| `--vulkan-device` | Vulkan device index |
+| `--image` | Image path for VL models |
+| `--builtin-tools` | Enable built-in demo tools |
 
-### Build
+Example session:
+
+```text
+llm_ncnn_run (cli). Type 'exit' or 'quit' to end the conversation.
+User: Hello
+Assistant: Hello! How can I help you today?
+```
+
+## OCR
+
+GLM-OCR uses a dedicated image prefill path and the shared text decode runtime.
+
+```bash
+xmake build ocr_main
+xmake run ocr_main --model ./assets/glm_ocr --image ./test_ocr.png --prompt "Read the text in the image."
+```
+
+Example output:
+
+```text
+Generating text:
+Hello World 123
+```
+
+## Embeddings
+
+`ncnn_embedding` provides a common API for text embeddings and CLIP-style text-image embeddings.
+
+### Text Embedding
 
 ```bash
 xmake build embedding_main
-xmake build clip_main
-```
-
-### Text Embedding Example
-
-```bash
 xmake run embedding_main --model ./assets/jina-embeddings-v5-text-nano
 ```
 
-Output example:
-```text
-Text-Text Similarity Matrix:
-               今天天气.. 今天天气.. 我喜欢吃.. 我喜欢吃.. The weather ..
-今天天气.. 1.0000         0.7116         0.6915         0.6872         0.6823
-...
-```
-
-### CLIP Multimodal Embedding Example
+### CLIP Multimodal Embedding
 
 ```bash
+xmake build clip_main
 xmake run clip_main --model ./assets/jina_clip_v2 --image ./assets/ganyu.jpg
 ```
 
-Output example:
-```text
-Text-Image Similarity Matrix:
-                              assets/ganyu.jpg
-a cat                         0.0996
-a dog                         0.0595
-blue hair anime character     0.2720
-蓝色头发动漫角色              0.2823
-```
-
-### API Usage
+### C++ API
 
 ```cpp
 #include "ncnn_embedding.h"
 
-// Load model
 ncnn_embedding embed("./assets/jina_clip_v2", false, 4);
 
-// Text encoding
 std::vector<float> text_vec = embed.encode_text("Hello world");
 
-// Image encoding (CLIP models only)
 if (embed.supports_image()) {
     std::vector<float> image_vec = embed.encode_image_file("./image.jpg");
-}
-
-// Calculate similarity
-float similarity = cosine_similarity(text_vec, image_vec);
-```
-
-### model.json Configuration Format
-
-**Text Embedding Model:**
-```json
-{
-    "model_type": "embedding",
-    "params": {
-        "encoder_param": "model.ncnn.param",
-        "encoder_bin": "model.ncnn.bin"
-    },
-    "tokenizer": {
-        "type": "bbpe",
-        "vocab_file": "vocab.txt",
-        "merges_file": "merges.txt"
-    },
-    "setting": {
-        "embed_dim": 768,
-        "rope": {
-            "type": "RoPE_full",
-            "rope_head_dim": 64,
-            "rope_theta": 1000000.0
-        }
-    }
+    float score = cosine_similarity(text_vec, image_vec);
 }
 ```
 
-**CLIP Multimodal Model:**
-```json
-{
-    "model_type": "clip",
-    "params": {
-        "text_encoder_param": "text.ncnn.param",
-        "text_encoder_bin": "text.ncnn.bin",
-        "vision_encoder_param": "vision.ncnn.param",
-        "vision_encoder_bin": "vision.ncnn.bin"
-    },
-    "tokenizer": {
-        "type": "unigram",
-        "vocab_file": "vocab.txt"
-    },
-    "setting": {
-        "text_embed_dim": 1024,
-        "vision_embed_dim": 1024,
-        "image_size": 512,
-        "image_mean": [0.485, 0.456, 0.406],
-        "image_std": [0.229, 0.224, 0.225],
-        "rope": {
-            "type": "RoPE_full",
-            "rope_head_dim": 64,
-            "rope_theta": 1000000.0
-        }
-    }
-}
-```
+## Other Examples
 
----
+| Target | Purpose |
+| --- | --- |
+| `llm_ncnn_run` | Unified chat / VL CLI |
+| `ocr_main` | GLM-OCR inference |
+| `embedding_main` | Text embedding inference |
+| `clip_main` | CLIP text-image embedding inference |
+| `nllb_main` | NLLB translation example |
+| `unigram_main` | Unigram tokenizer example |
+| `benchllm` | LLM benchmark |
+| `test_llm` | Unit tests |
 
-## 📊 Benchmark
-
-The project includes a benchmark tool for performance testing.
-
-### Build
-
-```bash
-xmake build benchllm
-```
-
-### Run
-
-```bash
-xmake run benchllm [loop_count] [num_threads] [powersave] [gpu_device] [cooling_down] [seqlen]
-```
-
-### Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `loop_count` | 4 | Number of benchmark iterations |
-| `num_threads` | auto | Number of CPU threads |
-| `powersave` | 2 | CPU powersave mode (0-2) |
-| `gpu_device` | -1 | Vulkan device ID (-1 for CPU only) |
-| `cooling_down` | 1 | Enable cooling down between tests |
-| `seqlen` | 233 | Sequence length for benchmark |
-
----
-
-## 🧪 Testing
-
-The project includes unit tests.
-
-### Build and Run Tests
+Build and run tests:
 
 ```bash
 xmake build test_llm
 xmake run test_llm
 ```
 
----
+Run benchmark:
 
-## 📁 Project Structure
-
+```bash
+xmake build benchllm
+xmake run benchllm [loop_count] [num_threads] [powersave] [gpu_device] [cooling_down] [seqlen]
 ```
+
+## Model Zoo
+
+Converted ncnn model weights are available from:
+
+https://mirrors.sdu.edu.cn/ncnn_modelzoo/
+
+Each downloaded model directory should contain `model.json`, ncnn param/bin files, and tokenizer files. Put the directory under `assets/` or pass its path with `--model`.
+
+## Configuration
+
+Each model directory is described by `model.json`. The exact fields depend on the model family, but a typical text model contains:
+
+```json
+{
+  "model_type": "llm",
+  "params": {
+    "embed_param": "embed.ncnn.param",
+    "embed_bin": "embed.ncnn.bin",
+    "decoder_param": "decoder.ncnn.param",
+    "decoder_bin": "decoder.ncnn.bin",
+    "lm_head_param": "lm_head.ncnn.param",
+    "lm_head_bin": "lm_head.ncnn.bin"
+  },
+  "tokenizer": {
+    "type": "bbpe",
+    "vocab_file": "vocab.txt",
+    "merges_file": "merges.txt"
+  },
+  "setting": {
+    "attn_cnt": 32,
+    "hidden_size": 1024,
+    "rope": {
+      "type": "RoPE",
+      "rope_head_dim": 64,
+      "rope_theta": 1000000.0
+    }
+  }
+}
+```
+
+Embedding and OCR models use their own `model_type` and parameter sections. See the model files under `assets/` for concrete examples.
+
+## Project Layout
+
+```text
 ncnn_llm/
-├── src/                    # Core library source
-│   ├── ncnn_llm_gpt.cpp    # Main LLM inference implementation
-│   ├── ncnn_embedding.cpp  # Embedding model implementation
-│   ├── sampling.cpp        # Token sampling strategies
-│   ├── nllb_600m.cpp       # NLLB model support
-│   └── utils/              # Utility modules
-│       ├── tokenizer/      # Tokenizer implementations (BPE, Unigram)
-│       ├── image_utils.cpp # Image processing utilities
-│       ├── gdr.cpp         # GDR support
-│       ├── prompt.cpp      # Prompt handling
-│       └── rope_embed.cpp  # RoPE embedding
-├── examples/               # Example applications
-│   ├── llm_ncnn_run/       # Unified CLI runner
+├── assets/                 # Local model directories and demo assets
+├── benchmark/              # Benchmark entry points
+├── examples/               # CLI and feature examples
+│   ├── llm_ncnn_run/       # Unified chat / VL runner
+│   ├── ocr_main.cpp        # OCR example
 │   ├── embedding_main.cpp  # Text embedding example
-│   ├── clip_main.cpp       # CLIP multimodal embedding example
-│   ├── nllb_main.cpp       # NLLB translation example
-│   └── unigram_main.cpp    # Unigram tokenizer example
-├── benchmark/              # Performance benchmarks
-│   └── benchllm.cpp
+│   ├── clip_main.cpp       # CLIP example
+│   └── nllb_main.cpp       # Translation example
+├── export/                 # Export scripts
+├── src/                    # Core runtime
+│   ├── ncnn_llm_gpt.*      # LLM / VL runtime
+│   ├── ncnn_llm_ocr.*      # OCR image prefill + shared decode
+│   ├── ncnn_embedding.*    # Embedding runtime
+│   ├── ncnn_text_runtime.* # Shared text decode helpers
+│   └── utils/              # Tokenizer, image, RoPE, prompt helpers
 ├── tests/                  # Unit tests
-│   └── test_llm.cpp
-├── export/                 # Model export scripts
-│   └── nllb_export.py
-└── xmake.lua              # Build configuration
+└── xmake.lua               # Build configuration
 ```
 
----
+## Roadmap
 
-## 📥 Model Zoo
+- Keep decoder and KV-cache runtime shared across model families
+- Expand supported model architectures and tokenizers
+- Improve Vulkan and CPU performance
+- Add INT8 quantization support
+- Document model export pipelines in more detail
 
-You can download the converted ncnn-compatible model weights from the following mirror:
+Older export scripts may become outdated as the runtime evolves. Prefer the latest model examples and `model.json` files as references.
 
-🔗 **[ncnn Model Zoo Mirror](https://mirrors.sdu.edu.cn/ncnn_modelzoo/)**
+## Community
 
----
+Issues, fixes, converted models, and test results are welcome.
 
-## 🔮 Roadmap
+- QQ group: `767178345`
 
-We are committed to improving ncnn_llm. Our future plans include:
+## License
 
-* **Upstream Optimization:** Submitting optimization patches directly to the upstream ncnn repository to improve core LLM support.
-* **Expanded Support:** Adding support for more model architectures and tokenizers.
-* **Performance:** Optimizing inference speed and reducing memory footprint.
-* **INT8 Quantization:** Implementing INT8 quantization support.
-* **Documentation:** Improving the export pipeline docs and adding more C++ usage examples.
-
-*Note: While we provide a complete export pipeline, older pipelines may become obsolete as the library evolves. Please refer to the latest example code for adjustments.*
-
----
-
-## 🤝 Community & Contact
-
-We welcome everyone to pay attention to and participate in this project to jointly promote the development of ncnn in the field of Large Language Models!
-
-* **QQ Group:** `767178345`
-
----
-
-## 📝 License
-
-Apache 2.0
+Apache License 2.0. See [LICENSE](LICENSE).
