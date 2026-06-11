@@ -9,13 +9,6 @@ ncnn_llm_ocr::ncnn_llm_ocr(const std::string& model_path, bool use_vulkan, int n
             std::ifstream ifs(model_path + "/model.json");
             ifs >> config;
         }
-        json preprocessor_config;
-        {
-            std::ifstream ifs(model_path + "/preprocessor_config.json");
-            if (ifs) {
-                ifs >> preprocessor_config;
-            }
-        }
 
         vision_net_ = std::make_shared<ncnn::Net>();
         text_embed_net_ = std::make_shared<ncnn::Net>();
@@ -177,6 +170,12 @@ ncnn_llm_ocr::ncnn_llm_ocr(const std::string& model_path, bool use_vulkan, int n
             if (vision_cfg.contains("max_num_patches")) {
                 max_num_patches_ = vision_cfg["max_num_patches"].get<int>();
             }
+            if (vision_cfg.contains("min_pixels")) {
+                min_pixels_ = vision_cfg["min_pixels"].get<long long>();
+            }
+            if (vision_cfg.contains("max_pixels")) {
+                max_pixels_ = vision_cfg["max_pixels"].get<long long>();
+            }
             if (vision_cfg.contains("image_mean")) {
                 auto mean = vision_cfg["image_mean"].get<std::vector<float>>();
                 image_mean_[0] = mean[0]; image_mean_[1] = mean[1]; image_mean_[2] = mean[2];
@@ -184,32 +183,6 @@ ncnn_llm_ocr::ncnn_llm_ocr(const std::string& model_path, bool use_vulkan, int n
             if (vision_cfg.contains("image_std")) {
                 auto std_vals = vision_cfg["image_std"].get<std::vector<float>>();
                 image_std_[0] = std_vals[0]; image_std_[1] = std_vals[1]; image_std_[2] = std_vals[2];
-            }
-        }
-
-        if (!preprocessor_config.empty()) {
-            if (preprocessor_config.contains("patch_size")) {
-                patch_size_ = preprocessor_config["patch_size"].get<int>();
-            }
-            if (preprocessor_config.contains("merge_size")) {
-                spatial_merge_size_ = preprocessor_config["merge_size"].get<int>();
-            }
-            if (preprocessor_config.contains("image_mean")) {
-                auto mean = preprocessor_config["image_mean"].get<std::vector<float>>();
-                image_mean_[0] = mean[0]; image_mean_[1] = mean[1]; image_mean_[2] = mean[2];
-            }
-            if (preprocessor_config.contains("image_std")) {
-                auto std_vals = preprocessor_config["image_std"].get<std::vector<float>>();
-                image_std_[0] = std_vals[0]; image_std_[1] = std_vals[1]; image_std_[2] = std_vals[2];
-            }
-            if (preprocessor_config.contains("size")) {
-                auto size = preprocessor_config["size"];
-                if (size.contains("shortest_edge")) {
-                    min_pixels_ = size["shortest_edge"].get<long long>();
-                }
-                if (size.contains("longest_edge")) {
-                    max_pixels_ = size["longest_edge"].get<long long>();
-                }
             }
         }
 
