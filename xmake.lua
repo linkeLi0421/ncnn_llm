@@ -17,8 +17,27 @@ if is_plat("wasm") and is_arch("wasm64") then
     add_ldflags("-sINITIAL_MEMORY=1073741824", "-sMAXIMUM_MEMORY=17179869184")
 end
 
+if is_plat("wasm") then
+    add_requires("emscripten")
+    set_toolchains("emcc@emscripten")
+    add_ldflags("-sASSERTIONS=2", "-sDEMANGLE_SUPPORT=1", "-sEXPORTED_RUNTIME_METHODS=['FS']")
+end
+
+if is_plat("wasm") and is_arch("wasm64") then
+    add_cxflags("-sMEMORY64=1")
+    add_ldflags("-sMEMORY64=1", "-sWASM_BIGINT=1")
+    add_ldflags("-sINITIAL_MEMORY=1073741824", "-sMAXIMUM_MEMORY=17179869184")
+end
+
 if is_plat("windows") then
     add_defines("NOMINMAX")
+
+    add_cxflags("/utf-8")
+    add_cxxflags("/utf-8")
+end
+
+if is_plat("windows", "mingw") then
+    add_syslinks("user32", "gdi32")
 
     add_cxflags("/utf-8")
     add_cxxflags("/utf-8")
@@ -31,9 +50,11 @@ end
 add_requires("ncnn master", {
     configs = {
         vulkan=true
+        vulkan=true
     }
 })
 
+add_requires("nlohmann_json")
 add_requires("nlohmann_json")
 
 add_includedirs("src/")
@@ -46,7 +67,9 @@ target("ncnn_llm")
     set_kind("static")
     add_files("src/*.cpp")
     add_files("src/utils/*.cpp")
+    add_files("src/utils/*.cpp")
     add_deps("ncnn_tokenizer")
+    add_packages("ncnn", "nlohmann_json")
     add_packages("ncnn", "nlohmann_json")
 
 target("llm_ncnn_run")
@@ -106,4 +129,5 @@ target("ocr_main")
     add_deps("ncnn_llm")
     add_packages("ncnn", "nlohmann_json")
 
+    set_rundir("$(projectdir)/")
     set_rundir("$(projectdir)/")
