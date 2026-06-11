@@ -8,3 +8,5 @@ examples/web_wasm/qwen3_web_wasm.js
 examples/web_wasm/qwen3_web_wasm.wasm
 /refer/
 /.trae/
+/R-C.jpg
+/test_ocr.png
