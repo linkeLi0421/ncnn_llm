@@ -52,6 +52,7 @@
 | LLM | Qwen3 | 已支持 | 聊天 / 文本生成 |
 | VLM | Qwen3.5 | 已支持 | 图像 + 文本输入 |
 | VLM | Qwen2.5-VL | 已支持 | 图像 + 文本输入 |
+| ASR | Qwen3-ASR | 进行中 | 音频编码器与文本栈导出骨架 |
 | OCR | GLM-OCR | 已支持 | OCR |
 | 翻译 | NLLB | 已支持 | 翻译示例 |
 | 嵌入 | Jina-Embeddings-v5-Text-Nano | 已支持 | 768 维文本嵌入 |
@@ -155,6 +156,34 @@ xmake run ocr_main --model ./assets/glm_ocr --image ./test_ocr.png --prompt "Rea
 Generating text:
 Hello World 123
 ```
+
+## Qwen3-ASR 导出
+
+Qwen3-ASR 支持仍在开发中。当前导出脚本会把 Hugging Face 模型拆成音频编码器、
+文本 embedding、文本主干和 lm head，并生成运行时需要的 tokenizer 资源和
+`model.json` 元数据。当前已验证的 checkpoint 格式是 `Qwen/Qwen3-ASR-0.6B`。
+
+```bash
+python3 export/qwen3_asr_export.py \
+  --model-id Qwen/Qwen3-ASR-0.6B \
+  --out-dir ./assets/qwen3_asr_0.6b \
+  --device cuda \
+  --dtype bf16
+```
+
+导出后立即运行 `pnnx`：
+
+```bash
+python3 export/qwen3_asr_export.py \
+  --model-id Qwen/Qwen3-ASR-0.6B \
+  --out-dir ./assets/qwen3_asr_0.6b \
+  --device cuda \
+  --dtype fp32 \
+  --convert-ncnn
+```
+
+`--convert-ncnn` 当前需要配合 `--dtype fp32` 使用；bf16 TorchScript 导出可用于
+检查 checkpoint，但生成的 pnnx/ncnn 文件暂时不能作为可靠运行时文件。
 
 ## 嵌入模型
 
