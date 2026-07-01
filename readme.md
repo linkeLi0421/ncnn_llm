@@ -52,6 +52,7 @@ The project started from **nihui's** experimental ncnn `kvcache` work and expand
 | LLM | Qwen3 | Supported | Chat / text generation |
 | VLM | Qwen3.5 | Supported | Image + text input |
 | VLM | Qwen2.5-VL | Supported | Image + text input |
+| ASR | Qwen3-ASR | In progress | Export scaffold for audio encoder + text stack |
 | OCR | GLM-OCR | Supported | OCR |
 | Translation | NLLB | Supported | Translation example |
 | Embedding | Jina-Embeddings-v5-Text-Nano | Supported | 768-dim text embeddings |
@@ -154,6 +155,32 @@ Example output:
 ```text
 Generating text:
 Hello World 123
+```
+
+## Qwen3-ASR Export
+
+Qwen3-ASR support is under active development. The current exporter splits the
+Hugging Face model into the audio encoder, text embedding stack, text backbone,
+and lm head, then writes tokenizer assets and a `model.json` manifest for the
+runtime work.
+
+```bash
+python3 export/qwen3_asr_export.py \
+  --model-id Qwen/Qwen3-ASR-0.6B-hf \
+  --out-dir ./assets/qwen3_asr_0.6b \
+  --device cuda \
+  --dtype bf16
+```
+
+To immediately run `pnnx` after tracing:
+
+```bash
+python3 export/qwen3_asr_export.py \
+  --model-id Qwen/Qwen3-ASR-0.6B-hf \
+  --out-dir ./assets/qwen3_asr_0.6b \
+  --device cuda \
+  --dtype bf16 \
+  --convert-ncnn
 ```
 
 ## Embeddings
