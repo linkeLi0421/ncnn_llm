@@ -187,6 +187,20 @@ python3 export/qwen3_asr_export.py \
 useful for checkpoint inspection, but the generated pnnx/ncnn files are not
 runtime-safe yet.
 
+The initial C++ runtime scaffold can load the exported modules and run module
+smoke tests from raw tensors:
+
+```bash
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --audio-features-raw ./mel_128x256.f32 --mel-bins 128 --frames 256
+
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --tokens 1,2,3,4,5,6,7,8
+```
+
+Full WAV preprocessing, prompt assembly, audio/text embedding merge, and
+autoregressive transcription are still runtime work.
+
 ## Embeddings
 
 `ncnn_embedding` provides a common API for text embeddings and CLIP-style text-image embeddings.

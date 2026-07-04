@@ -185,6 +185,18 @@ python3 export/qwen3_asr_export.py \
 `--convert-ncnn` 当前需要配合 `--dtype fp32` 使用；bf16 TorchScript 导出可用于
 检查 checkpoint，但生成的 pnnx/ncnn 文件暂时不能作为可靠运行时文件。
 
+初始 C++ 运行时骨架可以加载导出的模块，并用原始 tensor 做模块级 smoke test：
+
+```bash
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --audio-features-raw ./mel_128x256.f32 --mel-bins 128 --frames 256
+
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --tokens 1,2,3,4,5,6,7,8
+```
+
+完整 WAV 预处理、prompt 拼接、音频/text embedding 合并和自回归转写仍是后续运行时工作。
+
 ## 嵌入模型
 
 `ncnn_embedding` 为文本嵌入和 CLIP 风格的图文嵌入提供统一 API。
