@@ -211,7 +211,9 @@ Current validation covers the C++ log-mel frontend against the Hugging Face
 processor (`max_abs` about `1.7e-5` on a 16 kHz PCM test file) and matching
 greedy token ids between ncnn and TorchScript for a short synthesized speech
 sample. The runtime stops at the assistant end token and prints parsed
-`language=` and `text=` fields.
+`language=` and `text=` fields. A natural spoken-digit sample was also checked
+against the official PyTorch `Qwen3ASRModel.transcribe()` path; both produced
+`language=English` and `text=Zero.`.
 
 ## Embeddings
 
