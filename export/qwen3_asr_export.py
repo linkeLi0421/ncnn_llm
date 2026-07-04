@@ -9,17 +9,104 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from transformers import AutoModel, AutoProcessor
+import torch.nn.functional as F
+import numpy as np
+from transformers import AutoConfig, AutoModel, AutoProcessor
 
 
 class Qwen3ASRAudioEncoderTS(nn.Module):
-    def __init__(self, audio_tower: nn.Module):
+    def __init__(self, audio_tower: nn.Module, example_frames: int):
         super().__init__()
         self.audio_tower = audio_tower
+        # Keep chunking static and batch-1 so pnnx can lower the audio path to ncnn.
+        self.chunk_frames = int(audio_tower.n_window) * 2
+        self.full_chunks = example_frames // self.chunk_frames
+        self.tail_frames = example_frames % self.chunk_frames
+        self.after_full_chunk_frames = self._after_cnn_frames(self.chunk_frames)
+        self.after_tail_frames = self._after_cnn_frames(self.tail_frames) if self.tail_frames else 0
+        self.after_total_frames = self.full_chunks * self.after_full_chunk_frames + self.after_tail_frames
 
-    def forward(self, input_features: torch.Tensor, feature_lens: torch.Tensor) -> torch.Tensor:
-        output = self.audio_tower(input_features, feature_lens=feature_lens)
-        return output.last_hidden_state
+    @staticmethod
+    def _after_cnn_frames(input_frames: int) -> int:
+        input_frames_leave = input_frames % 100
+        feat_frames = (input_frames_leave - 1) // 2 + 1
+        output_frames = ((feat_frames - 1) // 2 + 1 - 1) // 2 + 1 + (input_frames // 100) * 13
+        return int(output_frames)
+
+    def forward(self, input_features: torch.Tensor) -> torch.Tensor:
+        chunks = []
+        for i in range(self.full_chunks):
+            start = i * self.chunk_frames
+            chunks.append(input_features[:, start : start + self.chunk_frames])
+        if self.tail_frames:
+            start = self.full_chunks * self.chunk_frames
+            tail = input_features[:, start : start + self.tail_frames]
+            chunks.append(F.pad(tail, (0, self.chunk_frames - self.tail_frames)))
+
+        valid_chunks = []
+        for chunk in chunks[: self.full_chunks]:
+            valid_chunks.append(self._encode_conv_chunk(chunk, self.after_full_chunk_frames))
+        if self.tail_frames:
+            valid_chunks.append(self._encode_conv_chunk(chunks[self.full_chunks], self.after_tail_frames))
+        hidden_states = torch.cat(valid_chunks, dim=1)
+
+        for encoder_layer in self.audio_tower.layers:
+            hidden_states = self._encode_layer(encoder_layer, hidden_states)
+
+        hidden_states = self.audio_tower.ln_post(hidden_states)
+        hidden_states = self.audio_tower.proj1(hidden_states)
+        hidden_states = self.audio_tower.act(hidden_states)
+        return self.audio_tower.proj2(hidden_states)
+
+    def _encode_conv_chunk(self, chunk: torch.Tensor, valid_frames: int) -> torch.Tensor:
+        hidden_states = chunk.unsqueeze(0).unsqueeze(0)
+        hidden_states = F.gelu(self.audio_tower.conv2d1(hidden_states))
+        hidden_states = F.gelu(self.audio_tower.conv2d2(hidden_states))
+        hidden_states = F.gelu(self.audio_tower.conv2d3(hidden_states))
+
+        b, c, f, t = hidden_states.size()
+        hidden_states = self.audio_tower.conv_out(
+            hidden_states.permute(0, 3, 1, 2).contiguous().view(b, t, c * f)
+        )
+        positional_embedding = (
+            self.audio_tower.positional_embedding.positional_embedding[: hidden_states.shape[1], :]
+            .unsqueeze(0)
+            .to(hidden_states.dtype)
+        )
+        hidden_states = hidden_states + positional_embedding
+        return hidden_states[:, :valid_frames, :]
+
+    @staticmethod
+    def _encode_layer(encoder_layer: nn.Module, hidden_states: torch.Tensor) -> torch.Tensor:
+        residual = hidden_states
+        hidden_states = encoder_layer.self_attn_layer_norm(hidden_states)
+
+        batch_size = hidden_states.shape[0]
+        seq_length = hidden_states.shape[1]
+        num_heads = encoder_layer.self_attn.num_heads
+        head_dim = encoder_layer.self_attn.head_dim
+        query_states = encoder_layer.self_attn.q_proj(hidden_states).view(batch_size, seq_length, num_heads, head_dim)
+        key_states = encoder_layer.self_attn.k_proj(hidden_states).view(batch_size, seq_length, num_heads, head_dim)
+        value_states = encoder_layer.self_attn.v_proj(hidden_states).view(batch_size, seq_length, num_heads, head_dim)
+        query_states = query_states.transpose(1, 2)
+        key_states = key_states.transpose(1, 2)
+        value_states = value_states.transpose(1, 2)
+        attn_output = F.scaled_dot_product_attention(
+            query_states,
+            key_states,
+            value_states,
+            dropout_p=0.0,
+            scale=encoder_layer.self_attn.scaling,
+        )
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_length, -1)
+        hidden_states = residual + encoder_layer.self_attn.out_proj(attn_output)
+
+        residual = hidden_states
+        hidden_states = encoder_layer.final_layer_norm(hidden_states)
+        hidden_states = encoder_layer.fc1(hidden_states)
+        hidden_states = encoder_layer.activation_fn(hidden_states)
+        hidden_states = encoder_layer.fc2(hidden_states)
+        return residual + hidden_states
 
 
 class Qwen3ASRTextEmbedTS(nn.Module):
@@ -37,8 +124,30 @@ class Qwen3ASRTextBackboneTS(nn.Module):
         self.text_model = text_model
 
     def forward(self, inputs_embeds: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        output = self.text_model(inputs_embeds=inputs_embeds, attention_mask=attention_mask, use_cache=False)
-        return output.last_hidden_state
+        batch_size = inputs_embeds.shape[0]
+        seq_len = inputs_embeds.shape[1]
+        hidden_states = inputs_embeds
+
+        cache_position = torch.arange(seq_len, device=inputs_embeds.device)
+        position_ids = cache_position.view(1, 1, -1).expand(3, batch_size, -1)
+        text_position_ids = position_ids[0]
+
+        mask_value = torch.finfo(inputs_embeds.dtype).min
+        causal_mask = torch.full((seq_len, seq_len), mask_value, dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+        causal_mask = torch.triu(causal_mask, diagonal=1)
+        causal_mask = causal_mask.view(1, 1, seq_len, seq_len).expand(batch_size, 1, seq_len, seq_len)
+
+        position_embeddings = self.text_model.rotary_emb(hidden_states, position_ids)
+        for layer in self.text_model.layers:
+            hidden_states = layer(
+                hidden_states,
+                attention_mask=causal_mask,
+                position_ids=text_position_ids,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+            )
+
+        return self.text_model.norm(hidden_states)
 
 
 class Qwen3ASRLmHeadTS(nn.Module):
@@ -193,11 +302,75 @@ def _register_qwen3_asr_auto_classes() -> None:
         pass
 
 
+def _normalize_qwen3_asr_config(config: Any) -> Any:
+    thinker_config = getattr(config, "thinker_config", config)
+    text_config = getattr(thinker_config, "text_config", None)
+    if text_config is not None and getattr(text_config, "rope_scaling", None) is None:
+        text_config.rope_scaling = {
+            "rope_type": "default",
+            "mrope_section": [24, 20, 20],
+        }
+    return config
+
+
+def _load_registered_qwen3_asr_config(model_id: str) -> Any:
+    config_path = Path(model_id) / "config.json"
+    if config_path.exists():
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw_config = json.load(f)
+
+        if (
+            raw_config.get("model_type") == "qwen3_asr"
+            and "thinker_config" not in raw_config
+            and isinstance(raw_config.get("audio_config"), dict)
+            and isinstance(raw_config.get("text_config"), dict)
+        ):
+            from qwen_asr.core.transformers_backend import Qwen3ASRConfig  # type: ignore
+
+            thinker_config = {
+                "audio_config": raw_config["audio_config"],
+                "text_config": raw_config["text_config"],
+                "audio_token_id": raw_config.get("audio_token_id", 151646),
+                "audio_start_token_id": raw_config.get("audio_start_token_id", 151647),
+                "user_token_id": raw_config.get("user_token_id", 872),
+                "initializer_range": raw_config.get("initializer_range", 0.02),
+            }
+            config = Qwen3ASRConfig(
+                thinker_config=thinker_config,
+                support_languages=raw_config.get("support_languages"),
+                **{
+                    k: v
+                    for k, v in raw_config.items()
+                    if k not in {"audio_config", "text_config", "thinker_config", "support_languages"}
+                },
+            )
+            return _normalize_qwen3_asr_config(config)
+
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    return _normalize_qwen3_asr_config(config)
+
+
 def _load_model_and_processor(model_id: str, device: str, dtype: torch.dtype) -> Tuple[Any, Any]:
-    _register_qwen3_asr_auto_classes()
-    model = AutoModel.from_pretrained(model_id, torch_dtype=dtype, trust_remote_code=True)
-    processor = AutoProcessor.from_pretrained(model_id, fix_mistral_regex=True, trust_remote_code=True)
-    model = model.to(device).eval()
+    load_kwargs: Dict[str, Any] = {
+        "torch_dtype": dtype,
+        "trust_remote_code": True,
+        "low_cpu_mem_usage": True,
+    }
+    load_on_device = device.startswith("cuda")
+    if load_on_device:
+        load_kwargs["device_map"] = {"": device}
+
+    try:
+        model = AutoModel.from_pretrained(model_id, **load_kwargs)
+        processor = AutoProcessor.from_pretrained(model_id, fix_mistral_regex=True, trust_remote_code=True)
+    except Exception:
+        _register_qwen3_asr_auto_classes()
+        config = _load_registered_qwen3_asr_config(model_id)
+        model = AutoModel.from_pretrained(model_id, config=config, **load_kwargs)
+        processor = AutoProcessor.from_pretrained(model_id, fix_mistral_regex=True, trust_remote_code=True)
+    if not load_on_device:
+        model = model.to(device)
+    model = model.eval()
     return model, processor
 
 
@@ -240,11 +413,10 @@ def _trace_audio_encoder(
     num_mel_bins: int,
     example_frames: int,
 ) -> None:
-    wrapper = Qwen3ASRAudioEncoderTS(audio_tower).to(device).eval()
+    wrapper = Qwen3ASRAudioEncoderTS(audio_tower, example_frames=example_frames).to(device).eval()
     example_input = torch.randn(num_mel_bins, example_frames, device=device, dtype=dtype)
-    example_lens = torch.tensor([example_frames], device=device, dtype=torch.long)
 
-    traced = torch.jit.trace(wrapper, (example_input, example_lens), strict=False)
+    traced = torch.jit.trace(wrapper, example_input, strict=False)
     traced.save(str(out_path))
 
 
@@ -254,9 +426,10 @@ def _trace_text_embed(
     device: str,
     dtype: torch.dtype,
     vocab_size: int,
+    seq_len: int,
 ) -> None:
     wrapper = Qwen3ASRTextEmbedTS(text_model).to(device).eval()
-    example_ids = torch.randint(0, vocab_size, (1, 8), device=device, dtype=torch.long)
+    example_ids = torch.randint(0, vocab_size, (1, seq_len), device=device, dtype=torch.long)
     traced = torch.jit.trace(wrapper, example_ids, strict=False)
     traced.save(str(out_path))
 
@@ -267,10 +440,13 @@ def _trace_text_backbone(
     device: str,
     dtype: torch.dtype,
     hidden_size: int,
+    seq_len: int,
 ) -> None:
+    if hasattr(text_model, "config"):
+        text_model.config._attn_implementation = "eager"
     wrapper = Qwen3ASRTextBackboneTS(text_model).to(device).eval()
-    example_embeds = torch.randn(1, 8, hidden_size, device=device, dtype=dtype)
-    example_mask = torch.ones(1, 8, device=device, dtype=torch.long)
+    example_embeds = torch.randn(1, seq_len, hidden_size, device=device, dtype=dtype)
+    example_mask = torch.ones(1, seq_len, device=device, dtype=torch.long)
     traced = torch.jit.trace(wrapper, (example_embeds, example_mask), strict=False)
     traced.save(str(out_path))
 
@@ -281,9 +457,10 @@ def _trace_lm_head(
     device: str,
     dtype: torch.dtype,
     hidden_size: int,
+    seq_len: int,
 ) -> None:
     wrapper = Qwen3ASRLmHeadTS(lm_head).to(device).eval()
-    example_hidden = torch.randn(1, 8, hidden_size, device=device, dtype=dtype)
+    example_hidden = torch.randn(1, seq_len, hidden_size, device=device, dtype=dtype)
     traced = torch.jit.trace(wrapper, example_hidden, strict=False)
     traced.save(str(out_path))
 
@@ -292,7 +469,12 @@ def _run_pnnx(pnnx_bin: str, pt_path: Path, extra_args: Optional[list[str]] = No
     cmd = [pnnx_bin, str(pt_path)]
     if extra_args:
         cmd.extend(extra_args)
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, cwd=str(pt_path.parent), check=True)
+
+
+def _save_pnnx_input(path: Path, value: np.ndarray) -> str:
+    np.save(path, value)
+    return f"input={path.name}"
 
 
 def export_qwen3_asr(
@@ -304,10 +486,13 @@ def export_qwen3_asr(
     export_text_stack: bool = True,
     convert_ncnn: bool = False,
     pnnx_bin: str = "pnnx",
+    text_seq_len: int = 8,
 ) -> Qwen3ASRExportBundle:
     device = _device_from_arg(device)
     default_dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
     torch_dtype = _resolve_dtype(dtype, default_dtype)
+    if convert_ncnn and torch_dtype != torch.float32:
+        raise ValueError("Qwen3-ASR pnnx/ncnn conversion currently requires --dtype fp32.")
 
     model, processor = _load_model_and_processor(model_id, device=device, dtype=torch_dtype)
 
@@ -353,6 +538,7 @@ def export_qwen3_asr(
             device=device,
             dtype=torch_dtype,
             vocab_size=int(text_cfg.vocab_size),
+            seq_len=text_seq_len,
         )
         _trace_text_backbone(
             text_model,
@@ -360,6 +546,7 @@ def export_qwen3_asr(
             device=device,
             dtype=torch_dtype,
             hidden_size=int(text_cfg.hidden_size),
+            seq_len=text_seq_len,
         )
         _trace_lm_head(
             lm_head,
@@ -367,6 +554,7 @@ def export_qwen3_asr(
             device=device,
             dtype=torch_dtype,
             hidden_size=int(text_cfg.hidden_size),
+            seq_len=text_seq_len,
         )
 
     tokenizer = getattr(processor, "tokenizer", None)
@@ -375,18 +563,28 @@ def export_qwen3_asr(
         "model_type": "qwen3_asr",
         "params": {
             "audio_encoder_pt": audio_encoder_path.name if export_audio_encoder else "",
+            "audio_encoder_param": "audio_encoder.ncnn.param" if export_audio_encoder else "",
+            "audio_encoder_bin": "audio_encoder.ncnn.bin" if export_audio_encoder else "",
             "text_embed_pt": text_embed_path.name if export_text_stack else "",
+            "text_embed_param": "text_embed.ncnn.param" if export_text_stack else "",
+            "text_embed_bin": "text_embed.ncnn.bin" if export_text_stack else "",
             "text_backbone_pt": text_backbone_path.name if export_text_stack else "",
+            "text_backbone_param": "text_backbone.ncnn.param" if export_text_stack else "",
+            "text_backbone_bin": "text_backbone.ncnn.bin" if export_text_stack else "",
             "lm_head_pt": lm_head_path.name if export_text_stack else "",
+            "lm_head_param": "lm_head.ncnn.param" if export_text_stack else "",
+            "lm_head_bin": "lm_head.ncnn.bin" if export_text_stack else "",
             "processor_dir": processor_dir.name,
         },
         "tokenizer": tokenizer_manifest,
         "setting": {
             "audio_token_id": int(thinker_cfg.audio_token_id),
             "audio_start_token_id": int(thinker_cfg.audio_start_token_id),
+            "audio_end_token_id": int(thinker_cfg.audio_end_token_id),
             "user_token_id": int(thinker_cfg.user_token_id),
             "audio_config": _to_jsonable(audio_cfg.to_dict() if hasattr(audio_cfg, "to_dict") else audio_cfg.__dict__),
             "text_config": _to_jsonable(text_cfg.to_dict() if hasattr(text_cfg, "to_dict") else text_cfg.__dict__),
+            "text_seq_len": int(text_seq_len),
             "support_languages": _to_jsonable(getattr(model.config, "support_languages", None)),
         },
     }
@@ -406,18 +604,22 @@ def export_qwen3_asr(
 
     if convert_ncnn:
         if export_audio_encoder:
+            audio_features_input = root / "pnnx_audio_features.npy"
+            np.save(audio_features_input, np.zeros((int(audio_cfg.num_mel_bins), max(16, example_frames)), dtype=np.float32))
             _run_pnnx(
                 pnnx_bin,
                 audio_encoder_path,
                 [
-                    f"inputshape=[{int(audio_cfg.num_mel_bins)},{max(16, example_frames)}]",
-                    f"inputshape2=[{int(audio_cfg.num_mel_bins)},{max(32, example_frames // 2)}]",
+                    f"input={audio_features_input.name}",
+                    "fp16=0",
                 ],
             )
         if export_text_stack:
-            _run_pnnx(pnnx_bin, text_embed_path, ["inputshape=[1,8]"])
-            _run_pnnx(pnnx_bin, text_backbone_path, [f"inputshape=[1,8,{int(text_cfg.hidden_size)}],[1,8]"])
-            _run_pnnx(pnnx_bin, lm_head_path, [f"inputshape=[1,8,{int(text_cfg.hidden_size)}]"])
+            text_ids_input = root / "pnnx_text_input_ids.npy"
+            _save_pnnx_input(text_ids_input, np.arange(text_seq_len, dtype=np.int64).reshape(1, text_seq_len))
+            _run_pnnx(pnnx_bin, text_embed_path, [f"input={text_ids_input.name}", "fp16=0"])
+            _run_pnnx(pnnx_bin, text_backbone_path, [f"inputshape=[1,{text_seq_len},{int(text_cfg.hidden_size)}],[1,{text_seq_len}]", "fp16=0"])
+            _run_pnnx(pnnx_bin, lm_head_path, [f"inputshape=[1,{text_seq_len},{int(text_cfg.hidden_size)}]", "fp16=0"])
 
     return Qwen3ASRExportBundle(
         root=root,
@@ -440,6 +642,7 @@ def main() -> None:
     parser.add_argument("--no-text-stack", action="store_true", help="Skip exporting the text stack.")
     parser.add_argument("--convert-ncnn", action="store_true", help="Run pnnx on exported TorchScript modules.")
     parser.add_argument("--pnnx-bin", default="pnnx", help="Path to pnnx executable.")
+    parser.add_argument("--text-seq-len", type=int, default=8, help="Static text sequence length for traced text modules.")
     args = parser.parse_args()
 
     bundle = export_qwen3_asr(
@@ -451,6 +654,7 @@ def main() -> None:
         export_text_stack=not args.no_text_stack,
         convert_ncnn=args.convert_ncnn,
         pnnx_bin=args.pnnx_bin,
+        text_seq_len=args.text_seq_len,
     )
 
     print(f"Saved manifest: {bundle.manifest_path}")

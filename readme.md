@@ -162,11 +162,11 @@ Hello World 123
 Qwen3-ASR support is under active development. The current exporter splits the
 Hugging Face model into the audio encoder, text embedding stack, text backbone,
 and lm head, then writes tokenizer assets and a `model.json` manifest for the
-runtime work.
+runtime work. The currently validated checkpoint format is `Qwen/Qwen3-ASR-0.6B`.
 
 ```bash
 python3 export/qwen3_asr_export.py \
-  --model-id Qwen/Qwen3-ASR-0.6B-hf \
+  --model-id Qwen/Qwen3-ASR-0.6B \
   --out-dir ./assets/qwen3_asr_0.6b \
   --device cuda \
   --dtype bf16
@@ -176,12 +176,42 @@ To immediately run `pnnx` after tracing:
 
 ```bash
 python3 export/qwen3_asr_export.py \
-  --model-id Qwen/Qwen3-ASR-0.6B-hf \
+  --model-id Qwen/Qwen3-ASR-0.6B \
   --out-dir ./assets/qwen3_asr_0.6b \
   --device cuda \
-  --dtype bf16 \
+  --dtype fp32 \
+  --text-seq-len 64 \
   --convert-ncnn
 ```
+
+`--convert-ncnn` currently requires `--dtype fp32`; bf16 TorchScript export is
+useful for checkpoint inspection, but the generated pnnx/ncnn files are not
+runtime-safe yet.
+
+The initial C++ runtime scaffold can load the exported modules and run module
+smoke tests from raw tensors:
+
+```bash
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --audio-features-raw ./mel_128x256.f32 --mel-bins 128 --frames 256
+
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --audio-wav ./sample_16k_pcm16.wav --frames 256 \
+  --generate-from-features --max-new-tokens 8
+
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --tokens 1,2,3,4,5,6,7,8
+```
+
+The WAV path currently supports 16 kHz PCM16 input and a fixed static text
+sequence length. Resampling, longer chunking, and PyTorch-matched frontend
+validation are still runtime work.
+
+Current validation covers the C++ log-mel frontend against the Hugging Face
+processor (`max_abs` about `1.7e-5` on a 16 kHz PCM test file) and matching
+greedy token ids between ncnn and TorchScript for a short synthesized speech
+sample. The runtime stops at the assistant end token and prints parsed
+`language=` and `text=` fields.
 
 ## Embeddings
 

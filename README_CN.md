@@ -161,11 +161,11 @@ Hello World 123
 
 Qwen3-ASR 支持仍在开发中。当前导出脚本会把 Hugging Face 模型拆成音频编码器、
 文本 embedding、文本主干和 lm head，并生成运行时需要的 tokenizer 资源和
-`model.json` 元数据。
+`model.json` 元数据。当前已验证的 checkpoint 格式是 `Qwen/Qwen3-ASR-0.6B`。
 
 ```bash
 python3 export/qwen3_asr_export.py \
-  --model-id Qwen/Qwen3-ASR-0.6B-hf \
+  --model-id Qwen/Qwen3-ASR-0.6B \
   --out-dir ./assets/qwen3_asr_0.6b \
   --device cuda \
   --dtype bf16
@@ -175,12 +175,38 @@ python3 export/qwen3_asr_export.py \
 
 ```bash
 python3 export/qwen3_asr_export.py \
-  --model-id Qwen/Qwen3-ASR-0.6B-hf \
+  --model-id Qwen/Qwen3-ASR-0.6B \
   --out-dir ./assets/qwen3_asr_0.6b \
   --device cuda \
-  --dtype bf16 \
+  --dtype fp32 \
+  --text-seq-len 64 \
   --convert-ncnn
 ```
+
+`--convert-ncnn` 当前需要配合 `--dtype fp32` 使用；bf16 TorchScript 导出可用于
+检查 checkpoint，但生成的 pnnx/ncnn 文件暂时不能作为可靠运行时文件。
+
+初始 C++ 运行时骨架可以加载导出的模块，并用原始 tensor 做模块级 smoke test：
+
+```bash
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --audio-features-raw ./mel_128x256.f32 --mel-bins 128 --frames 256
+
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --audio-wav ./sample_16k_pcm16.wav --frames 256 \
+  --generate-from-features --max-new-tokens 8
+
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --tokens 1,2,3,4,5,6,7,8
+```
+
+WAV 路径当前支持 16 kHz PCM16 输入和固定静态文本长度。重采样、更长 chunk
+以及与 PyTorch 完全对齐的前端验证仍是后续运行时工作。
+
+当前验证已覆盖 C++ log-mel 前端与 Hugging Face processor 的对齐（16 kHz PCM
+测试文件上 `max_abs` 约 `1.7e-5`），并在一段短合成语音上确认 ncnn 与
+TorchScript 的 greedy token id 一致。运行时会在 assistant 结束 token 处停止，
+并输出解析后的 `language=` 和 `text=` 字段。
 
 ## 嵌入模型
 
