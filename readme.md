@@ -210,7 +210,8 @@ validation are still runtime work.
 Current validation covers the C++ log-mel frontend against the Hugging Face
 processor (`max_abs` about `1.7e-5` on a 16 kHz PCM test file) and matching
 greedy token ids between ncnn and TorchScript for a short synthesized speech
-sample.
+sample. The runtime stops at the assistant end token and prints parsed
+`language=` and `text=` fields.
 
 ## Embeddings
 

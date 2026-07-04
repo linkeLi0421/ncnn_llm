@@ -1,6 +1,7 @@
 #include "ncnn_qwen3_asr.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -238,11 +239,71 @@ int ncnn_qwen3_asr::select_next_token_from_logits(const ncnn::Mat& logits) const
     return best;
 }
 
+bool ncnn_qwen3_asr::should_stop_token(int token_id) const {
+    const int im_end = 151645;
+    return token_id == im_end;
+}
+
 std::string ncnn_qwen3_asr::decode(const std::vector<int>& ids, bool skip_special_tokens) const {
     if (!tokenizer_) {
         return {};
     }
     return tokenizer_->decode(ids, skip_special_tokens);
+}
+
+Qwen3ASRResult ncnn_qwen3_asr::parse_output(const std::vector<int>& generated_ids) const {
+    Qwen3ASRResult result;
+    result.raw_text = decode(generated_ids, true);
+    result.text = result.raw_text;
+
+    const std::string prefix = "language ";
+    if (result.text.rfind(prefix, 0) == 0) {
+        const size_t after_prefix = prefix.size();
+        size_t marker = result.text.find("<asr_text>", after_prefix);
+        size_t text_start = std::string::npos;
+        if (marker != std::string::npos) {
+            result.language = result.text.substr(after_prefix, marker - after_prefix);
+            text_start = marker + std::string("<asr_text>").size();
+        } else {
+            static const std::array<const char*, 12> languages = {
+                "English", "Chinese", "German", "French", "Spanish", "Italian",
+                "Portuguese", "Russian", "Japanese", "Korean", "Arabic", "Hindi"
+            };
+            for (const char* language : languages) {
+                const std::string lang(language);
+                if (result.text.compare(after_prefix, lang.size(), lang) == 0) {
+                    result.language = lang;
+                    text_start = after_prefix + lang.size();
+                    break;
+                }
+            }
+            if (result.language.empty()) {
+                size_t split = result.text.find_first_of("\n\r\t ", after_prefix);
+                if (split != std::string::npos) {
+                    result.language = result.text.substr(after_prefix, split - after_prefix);
+                    text_start = result.text.find_first_not_of(" \t\r\n", split);
+                } else {
+                    result.language = result.text.substr(after_prefix);
+                }
+            }
+        }
+        if (text_start != std::string::npos) {
+            result.text = result.text.substr(text_start);
+        } else {
+            result.text.clear();
+        }
+    }
+
+    while (!result.text.empty() && (result.text.back() == '\n' || result.text.back() == '\r')) {
+        result.text.pop_back();
+    }
+    size_t first_text = result.text.find_first_not_of(" \t\r\n");
+    if (first_text == std::string::npos) {
+        result.text.clear();
+    } else if (first_text > 0) {
+        result.text = result.text.substr(first_text);
+    }
+    return result;
 }
 
 std::vector<int> ncnn_qwen3_asr::build_prompt_ids(int audio_token_count,

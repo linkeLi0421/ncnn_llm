@@ -13,6 +13,12 @@
 
 using nlohmann::json;
 
+struct Qwen3ASRResult {
+    std::string language;
+    std::string text;
+    std::string raw_text;
+};
+
 class ncnn_qwen3_asr : public ncnn_llm_base {
 public:
     ncnn_qwen3_asr(const std::string& model_path, bool use_vulkan = false, int num_threads = 0);
@@ -31,7 +37,9 @@ public:
     ncnn::Mat run_lm_head(const ncnn::Mat& hidden_states) const;
 
     int select_next_token_from_logits(const ncnn::Mat& logits) const;
+    bool should_stop_token(int token_id) const;
     std::string decode(const std::vector<int>& ids, bool skip_special_tokens = true) const;
+    Qwen3ASRResult parse_output(const std::vector<int>& generated_ids) const;
     std::vector<int> build_prompt_ids(int audio_token_count,
                                       const std::string& context = "",
                                       const std::string& language = "") const;

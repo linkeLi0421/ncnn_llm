@@ -240,11 +240,18 @@ int main(int argc, char** argv) {
             if (next < 0) {
                 return 11;
             }
+            if (asr.should_stop_token(next)) {
+                std::cout << "stop_token=" << next << "\n";
+                break;
+            }
             generated.push_back(next);
             running_ids.push_back(next);
             std::cout << "generated_token[" << i << "]=" << next << "\n";
         }
-        std::cout << "generated_text=" << asr.decode(generated, true) << "\n";
+        Qwen3ASRResult result = asr.parse_output(generated);
+        std::cout << "generated_raw=" << result.raw_text << "\n";
+        std::cout << "language=" << result.language << "\n";
+        std::cout << "text=" << result.text << "\n";
     }
 
     if (!args.token_ids.empty()) {
