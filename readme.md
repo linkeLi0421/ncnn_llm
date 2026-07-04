@@ -207,6 +207,11 @@ The WAV path currently supports 16 kHz PCM16 input and a fixed static text
 sequence length. Resampling, longer chunking, and PyTorch-matched frontend
 validation are still runtime work.
 
+Current validation covers the C++ log-mel frontend against the Hugging Face
+processor (`max_abs` about `1.7e-5` on a 16 kHz PCM test file) and matching
+greedy token ids between ncnn and TorchScript for a short synthesized speech
+sample.
+
 ## Embeddings
 
 `ncnn_embedding` provides a common API for text embeddings and CLIP-style text-image embeddings.

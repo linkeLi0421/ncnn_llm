@@ -72,6 +72,19 @@ static std::vector<float> build_mel_filters(int mel_bins, int n_fft, int sample_
     return filters;
 }
 
+static float reflected_sample(const std::vector<float>& samples, int index) {
+    const int n = (int)samples.size();
+    if (n <= 0) return 0.0f;
+    if (n == 1) return samples[0];
+    while (index < 0) {
+        if (index < 0) {
+            index = -index;
+        }
+    }
+    if (index >= n) return 0.0f;
+    return samples[(size_t)index];
+}
+
 } // namespace
 
 bool load_wav_pcm16(const std::string& path, std::vector<float>& mono, int& sample_rate) {
@@ -143,17 +156,13 @@ ncnn::Mat wav_to_whisper_log_mel(const std::vector<float>& mono,
 
     std::vector<float> power(fft_bins);
     for (int t = 0; t < frames; t++) {
-        const int offset = t * hop;
+        const int offset = t * hop - n_fft / 2;
         std::fill(power.begin(), power.end(), 0.0f);
         for (int k = 0; k < fft_bins; k++) {
             double real = 0.0;
             double imag = 0.0;
             for (int n = 0; n < n_fft; n++) {
-                float x = 0.0f;
-                int idx = offset + n;
-                if (idx >= 0 && idx < (int)mono.size()) {
-                    x = mono[(size_t)idx] * window[n];
-                }
+                float x = reflected_sample(mono, offset + n) * window[n];
                 double angle = -2.0 * 3.14159265358979323846 * (double)k * (double)n / (double)n_fft;
                 real += (double)x * std::cos(angle);
                 imag += (double)x * std::sin(angle);

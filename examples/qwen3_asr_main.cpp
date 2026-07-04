@@ -12,6 +12,7 @@ struct Args {
     std::string model_path = "./assets/qwen3_asr_0.6b";
     std::string audio_features_raw;
     std::string audio_wav;
+    std::string dump_mel_raw;
     int mel_bins = 128;
     int frames = 256;
     std::vector<int> token_ids;
@@ -28,6 +29,7 @@ static void print_usage(const char* prog) {
         << "Usage: " << prog << " [--model DIR] [--audio-wav FILE | --audio-features-raw FILE]\n"
         << "                 [--mel-bins N --frames N]\n"
         << "                 [--tokens comma,separated,ids] [--generate-from-features]\n"
+        << "                 [--dump-mel-raw FILE]\n"
         << "                 [--context TEXT] [--language NAME] [--max-new-tokens N]\n"
         << "                 [--threads N] [--vulkan]\n\n"
         << "Examples:\n"
@@ -68,6 +70,9 @@ static Args parse_args(int argc, char** argv) {
         } else if (arg == "--audio-features-raw") {
             need_value("--audio-features-raw");
             args.audio_features_raw = argv[++i];
+        } else if (arg == "--dump-mel-raw") {
+            need_value("--dump-mel-raw");
+            args.dump_mel_raw = argv[++i];
         } else if (arg == "--mel-bins") {
             need_value("--mel-bins");
             args.mel_bins = std::stoi(argv[++i]);
@@ -121,6 +126,18 @@ static bool read_file(const std::string& path, std::vector<float>& values) {
     return (bool)f;
 }
 
+static bool write_mat_raw(const std::string& path, const ncnn::Mat& mat) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f) {
+        return false;
+    }
+    for (int y = 0; y < mat.h; y++) {
+        const float* row = mat.row(y);
+        f.write(reinterpret_cast<const char*>(row), (std::streamsize)mat.w * (std::streamsize)sizeof(float));
+    }
+    return (bool)f;
+}
+
 static void print_mat_shape(const char* name, const ncnn::Mat& mat) {
     std::cout << name << ": dims=" << mat.dims
               << " w=" << mat.w
@@ -160,6 +177,10 @@ int main(int argc, char** argv) {
             return 3;
         }
         ncnn::Mat mel = wav_to_whisper_log_mel(wav, sample_rate, args.mel_bins, args.frames);
+        if (!args.dump_mel_raw.empty() && !write_mat_raw(args.dump_mel_raw, mel)) {
+            std::cerr << "Failed to write mel dump: " << args.dump_mel_raw << "\n";
+            return 4;
+        }
         audio = asr.run_audio_encoder(mel);
         if (audio.total() == 0) {
             return 4;

@@ -203,6 +203,10 @@ xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
 WAV 路径当前支持 16 kHz PCM16 输入和固定静态文本长度。重采样、更长 chunk
 以及与 PyTorch 完全对齐的前端验证仍是后续运行时工作。
 
+当前验证已覆盖 C++ log-mel 前端与 Hugging Face processor 的对齐（16 kHz PCM
+测试文件上 `max_abs` 约 `1.7e-5`），并在一段短合成语音上确认 ncnn 与
+TorchScript 的 greedy token id 一致。
+
 ## 嵌入模型
 
 `ncnn_embedding` 为文本嵌入和 CLIP 风格的图文嵌入提供统一 API。
