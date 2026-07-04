@@ -180,6 +180,7 @@ python3 export/qwen3_asr_export.py \
   --out-dir ./assets/qwen3_asr_0.6b \
   --device cuda \
   --dtype fp32 \
+  --text-seq-len 64 \
   --convert-ncnn
 ```
 
@@ -195,11 +196,16 @@ xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
   --audio-features-raw ./mel_128x256.f32 --mel-bins 128 --frames 256
 
 xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
+  --audio-wav ./sample_16k_pcm16.wav --frames 256 \
+  --generate-from-features --max-new-tokens 8
+
+xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
   --tokens 1,2,3,4,5,6,7,8
 ```
 
-Full WAV preprocessing, prompt assembly, audio/text embedding merge, and
-autoregressive transcription are still runtime work.
+The WAV path currently supports 16 kHz PCM16 input and a fixed static text
+sequence length. Resampling, longer chunking, and PyTorch-matched frontend
+validation are still runtime work.
 
 ## Embeddings
 

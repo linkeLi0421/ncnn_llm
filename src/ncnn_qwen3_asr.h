@@ -22,6 +22,7 @@ public:
     int vocab_size() const { return vocab_size_; }
     int audio_token_id() const { return audio_token_id_; }
     int audio_start_token_id() const { return audio_start_token_id_; }
+    int text_seq_len() const { return text_seq_len_; }
 
     // Expects log-mel features as an ncnn Mat with w=frames, h=num_mel_bins.
     ncnn::Mat run_audio_encoder(const ncnn::Mat& mel_features) const;
@@ -31,6 +32,13 @@ public:
 
     int select_next_token_from_logits(const ncnn::Mat& logits) const;
     std::string decode(const std::vector<int>& ids, bool skip_special_tokens = true) const;
+    std::vector<int> build_prompt_ids(int audio_token_count,
+                                      const std::string& context = "",
+                                      const std::string& language = "") const;
+    ncnn::Mat merge_audio_embeddings(const ncnn::Mat& text_embeds,
+                                     const std::vector<int>& input_ids,
+                                     const ncnn::Mat& audio_embeds) const;
+    int decode_next_token(const std::vector<int>& input_ids, const ncnn::Mat& audio_embeds) const;
 
 private:
     bool load_model_file(const std::string& model_path);
@@ -50,5 +58,7 @@ private:
     int audio_token_id_ = -1;
     int audio_start_token_id_ = -1;
     int user_token_id_ = -1;
+    int audio_end_token_id_ = -1;
+    int text_seq_len_ = 8;
     bool text_backbone_has_attention_mask_ = false;
 };

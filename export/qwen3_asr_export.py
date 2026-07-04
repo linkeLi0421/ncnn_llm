@@ -426,9 +426,10 @@ def _trace_text_embed(
     device: str,
     dtype: torch.dtype,
     vocab_size: int,
+    seq_len: int,
 ) -> None:
     wrapper = Qwen3ASRTextEmbedTS(text_model).to(device).eval()
-    example_ids = torch.randint(0, vocab_size, (1, 8), device=device, dtype=torch.long)
+    example_ids = torch.randint(0, vocab_size, (1, seq_len), device=device, dtype=torch.long)
     traced = torch.jit.trace(wrapper, example_ids, strict=False)
     traced.save(str(out_path))
 
@@ -439,12 +440,13 @@ def _trace_text_backbone(
     device: str,
     dtype: torch.dtype,
     hidden_size: int,
+    seq_len: int,
 ) -> None:
     if hasattr(text_model, "config"):
         text_model.config._attn_implementation = "eager"
     wrapper = Qwen3ASRTextBackboneTS(text_model).to(device).eval()
-    example_embeds = torch.randn(1, 8, hidden_size, device=device, dtype=dtype)
-    example_mask = torch.ones(1, 8, device=device, dtype=torch.long)
+    example_embeds = torch.randn(1, seq_len, hidden_size, device=device, dtype=dtype)
+    example_mask = torch.ones(1, seq_len, device=device, dtype=torch.long)
     traced = torch.jit.trace(wrapper, (example_embeds, example_mask), strict=False)
     traced.save(str(out_path))
 
@@ -455,9 +457,10 @@ def _trace_lm_head(
     device: str,
     dtype: torch.dtype,
     hidden_size: int,
+    seq_len: int,
 ) -> None:
     wrapper = Qwen3ASRLmHeadTS(lm_head).to(device).eval()
-    example_hidden = torch.randn(1, 8, hidden_size, device=device, dtype=dtype)
+    example_hidden = torch.randn(1, seq_len, hidden_size, device=device, dtype=dtype)
     traced = torch.jit.trace(wrapper, example_hidden, strict=False)
     traced.save(str(out_path))
 
@@ -483,6 +486,7 @@ def export_qwen3_asr(
     export_text_stack: bool = True,
     convert_ncnn: bool = False,
     pnnx_bin: str = "pnnx",
+    text_seq_len: int = 8,
 ) -> Qwen3ASRExportBundle:
     device = _device_from_arg(device)
     default_dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
@@ -534,6 +538,7 @@ def export_qwen3_asr(
             device=device,
             dtype=torch_dtype,
             vocab_size=int(text_cfg.vocab_size),
+            seq_len=text_seq_len,
         )
         _trace_text_backbone(
             text_model,
@@ -541,6 +546,7 @@ def export_qwen3_asr(
             device=device,
             dtype=torch_dtype,
             hidden_size=int(text_cfg.hidden_size),
+            seq_len=text_seq_len,
         )
         _trace_lm_head(
             lm_head,
@@ -548,6 +554,7 @@ def export_qwen3_asr(
             device=device,
             dtype=torch_dtype,
             hidden_size=int(text_cfg.hidden_size),
+            seq_len=text_seq_len,
         )
 
     tokenizer = getattr(processor, "tokenizer", None)
@@ -573,9 +580,11 @@ def export_qwen3_asr(
         "setting": {
             "audio_token_id": int(thinker_cfg.audio_token_id),
             "audio_start_token_id": int(thinker_cfg.audio_start_token_id),
+            "audio_end_token_id": int(thinker_cfg.audio_end_token_id),
             "user_token_id": int(thinker_cfg.user_token_id),
             "audio_config": _to_jsonable(audio_cfg.to_dict() if hasattr(audio_cfg, "to_dict") else audio_cfg.__dict__),
             "text_config": _to_jsonable(text_cfg.to_dict() if hasattr(text_cfg, "to_dict") else text_cfg.__dict__),
+            "text_seq_len": int(text_seq_len),
             "support_languages": _to_jsonable(getattr(model.config, "support_languages", None)),
         },
     }
@@ -607,10 +616,10 @@ def export_qwen3_asr(
             )
         if export_text_stack:
             text_ids_input = root / "pnnx_text_input_ids.npy"
-            _save_pnnx_input(text_ids_input, np.arange(8, dtype=np.int64).reshape(1, 8))
+            _save_pnnx_input(text_ids_input, np.arange(text_seq_len, dtype=np.int64).reshape(1, text_seq_len))
             _run_pnnx(pnnx_bin, text_embed_path, [f"input={text_ids_input.name}", "fp16=0"])
-            _run_pnnx(pnnx_bin, text_backbone_path, [f"inputshape=[1,8,{int(text_cfg.hidden_size)}],[1,8]", "fp16=0"])
-            _run_pnnx(pnnx_bin, lm_head_path, [f"inputshape=[1,8,{int(text_cfg.hidden_size)}]", "fp16=0"])
+            _run_pnnx(pnnx_bin, text_backbone_path, [f"inputshape=[1,{text_seq_len},{int(text_cfg.hidden_size)}],[1,{text_seq_len}]", "fp16=0"])
+            _run_pnnx(pnnx_bin, lm_head_path, [f"inputshape=[1,{text_seq_len},{int(text_cfg.hidden_size)}]", "fp16=0"])
 
     return Qwen3ASRExportBundle(
         root=root,
@@ -633,6 +642,7 @@ def main() -> None:
     parser.add_argument("--no-text-stack", action="store_true", help="Skip exporting the text stack.")
     parser.add_argument("--convert-ncnn", action="store_true", help="Run pnnx on exported TorchScript modules.")
     parser.add_argument("--pnnx-bin", default="pnnx", help="Path to pnnx executable.")
+    parser.add_argument("--text-seq-len", type=int, default=8, help="Static text sequence length for traced text modules.")
     args = parser.parse_args()
 
     bundle = export_qwen3_asr(
@@ -644,6 +654,7 @@ def main() -> None:
         export_text_stack=not args.no_text_stack,
         convert_ncnn=args.convert_ncnn,
         pnnx_bin=args.pnnx_bin,
+        text_seq_len=args.text_seq_len,
     )
 
     print(f"Saved manifest: {bundle.manifest_path}")

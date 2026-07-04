@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <stdexcept>
 
@@ -62,8 +63,14 @@ bool ncnn_qwen3_asr::load_model_file(const std::string& model_path) {
             if (setting.contains("audio_start_token_id")) {
                 audio_start_token_id_ = setting["audio_start_token_id"].get<int>();
             }
+            if (setting.contains("audio_end_token_id")) {
+                audio_end_token_id_ = setting["audio_end_token_id"].get<int>();
+            }
             if (setting.contains("user_token_id")) {
                 user_token_id_ = setting["user_token_id"].get<int>();
+            }
+            if (setting.contains("text_seq_len")) {
+                text_seq_len_ = setting["text_seq_len"].get<int>();
             }
             if (setting.contains("text_config") && setting["text_config"].contains("hidden_size")) {
                 hidden_size_ = setting["text_config"]["hidden_size"].get<int>();
@@ -89,13 +96,21 @@ bool ncnn_qwen3_asr::load_model_file(const std::string& model_path) {
                     tokenizer_->AddAdditionalSpecialToken(token.get<std::string>(), true);
                 }
             }
+            if (audio_end_token_id_ < 0 && tok.contains("audio_eos_token")) {
+                const std::string token = tok["audio_eos_token"].get<std::string>();
+                auto it = tokenizer_->token_to_id().find(token);
+                if (it != tokenizer_->token_to_id().end()) {
+                    audio_end_token_id_ = it->second;
+                }
+            }
             if (vocab_size_ <= 0) {
                 vocab_size_ = (int)tokenizer_->vocab_size();
             }
         }
 
-        printf("  hidden_size=%d vocab_size=%d audio_token_id=%d audio_start_token_id=%d user_token_id=%d\n",
-               hidden_size_, vocab_size_, audio_token_id_, audio_start_token_id_, user_token_id_);
+        printf("  hidden_size=%d vocab_size=%d text_seq_len=%d\n", hidden_size_, vocab_size_, text_seq_len_);
+        printf("  audio_token_id=%d audio_start_token_id=%d audio_end_token_id=%d user_token_id=%d\n",
+               audio_token_id_, audio_start_token_id_, audio_end_token_id_, user_token_id_);
         printf("  text_backbone_attention_mask=%s\n", text_backbone_has_attention_mask_ ? "true" : "false");
         return true;
     } catch (const std::exception& e) {
@@ -228,4 +243,114 @@ std::string ncnn_qwen3_asr::decode(const std::vector<int>& ids, bool skip_specia
         return {};
     }
     return tokenizer_->decode(ids, skip_special_tokens);
+}
+
+std::vector<int> ncnn_qwen3_asr::build_prompt_ids(int audio_token_count,
+                                                  const std::string& context,
+                                                  const std::string& language) const {
+    if (audio_token_count <= 0) {
+        return {};
+    }
+
+    const int im_start = 151644;
+    const int im_end = 151645;
+    const int newline = 198;
+    const int system = 8948;
+    const int assistant = 77091;
+
+    std::vector<int> ids = {im_start, system, newline};
+    if (!context.empty() && tokenizer_) {
+        std::vector<int> context_ids = tokenizer_->encode(context, false, false, false, false);
+        ids.insert(ids.end(), context_ids.begin(), context_ids.end());
+    }
+    ids.push_back(im_end);
+    ids.push_back(newline);
+    ids.push_back(im_start);
+    ids.push_back(user_token_id_);
+    ids.push_back(newline);
+    ids.push_back(audio_start_token_id_);
+    for (int i = 0; i < audio_token_count; i++) {
+        ids.push_back(audio_token_id_);
+    }
+    ids.push_back(audio_end_token_id_);
+    ids.push_back(im_end);
+    ids.push_back(newline);
+    ids.push_back(im_start);
+    ids.push_back(assistant);
+    ids.push_back(newline);
+
+    if (!language.empty() && tokenizer_) {
+        std::vector<int> language_ids = tokenizer_->encode("language " + language + "<asr_text>", false, false, false, false);
+        ids.insert(ids.end(), language_ids.begin(), language_ids.end());
+    }
+    return ids;
+}
+
+ncnn::Mat ncnn_qwen3_asr::merge_audio_embeddings(const ncnn::Mat& text_embeds,
+                                                 const std::vector<int>& input_ids,
+                                                 const ncnn::Mat& audio_embeds) const {
+    ncnn::Mat merged = text_embeds.clone();
+    if (hidden_size_ <= 0 || merged.w != hidden_size_ || audio_embeds.w != hidden_size_) {
+        fprintf(stderr, "Qwen3-ASR merge shape mismatch: text w=%d audio w=%d hidden=%d\n",
+                merged.w, audio_embeds.w, hidden_size_);
+        return {};
+    }
+
+    int audio_row = 0;
+    for (size_t i = 0; i < input_ids.size(); i++) {
+        if (input_ids[i] != audio_token_id_) {
+            continue;
+        }
+        if (audio_row >= audio_embeds.h || (int)i >= merged.h) {
+            fprintf(stderr, "Qwen3-ASR audio token/audio embedding count mismatch\n");
+            return {};
+        }
+        float* dst = merged.row((int)i);
+        const float* src = audio_embeds.row(audio_row);
+        std::memcpy(dst, src, sizeof(float) * (size_t)hidden_size_);
+        audio_row++;
+    }
+
+    if (audio_row != audio_embeds.h) {
+        fprintf(stderr, "Qwen3-ASR unused audio embeddings: used=%d total=%d\n", audio_row, audio_embeds.h);
+        return {};
+    }
+    return merged;
+}
+
+int ncnn_qwen3_asr::decode_next_token(const std::vector<int>& input_ids, const ncnn::Mat& audio_embeds) const {
+    if ((int)input_ids.size() > text_seq_len_) {
+        fprintf(stderr, "Qwen3-ASR input length %zu exceeds static text_seq_len %d\n", input_ids.size(), text_seq_len_);
+        return -1;
+    }
+
+    std::vector<int> padded_ids = input_ids;
+    padded_ids.resize((size_t)text_seq_len_, 0);
+    ncnn::Mat text_embeds = run_text_embed(padded_ids);
+    if (text_embeds.total() == 0) {
+        return -1;
+    }
+
+    ncnn::Mat merged = merge_audio_embeddings(text_embeds, input_ids, audio_embeds);
+    if (merged.total() == 0) {
+        return -1;
+    }
+
+    std::vector<int> mask((size_t)text_seq_len_, 0);
+    std::fill(mask.begin(), mask.begin() + (std::vector<int>::difference_type)input_ids.size(), 1);
+    ncnn::Mat hidden = run_text_backbone(merged, mask);
+    if (hidden.total() == 0) {
+        return -1;
+    }
+    ncnn::Mat logits = run_lm_head(hidden);
+    if (logits.total() == 0) {
+        return -1;
+    }
+
+    if (logits.h <= (int)input_ids.size() - 1) {
+        return select_next_token_from_logits(logits);
+    }
+    ncnn::Mat row(logits.w, (void*)logits.row((int)input_ids.size() - 1), sizeof(float), 1);
+    row = row.clone();
+    return select_next_token_from_logits(row);
 }
