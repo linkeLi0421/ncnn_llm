@@ -184,6 +184,24 @@ python3 export/qwen3_asr_export.py \
   --convert-ncnn
 ```
 
+For longer generated text per audio chunk, export with a larger static text
+length, for example:
+
+```bash
+python3 export/qwen3_asr_export.py \
+  --model-id Qwen/Qwen3-ASR-0.6B \
+  --out-dir ./assets/qwen3_asr_0.6b_text128 \
+  --device cuda \
+  --dtype fp32 \
+  --text-seq-len 128 \
+  --convert-ncnn
+```
+
+In validation, a fast synthesized number sequence was truncated by the
+`text_seq_len=64` runtime at `... twelve thirteen`, while the `text_seq_len=128`
+runtime matched PyTorch with
+`One two three four five six seven eight nine ten eleven twelve thirteen fourteen.`.
+
 `--convert-ncnn` currently requires `--dtype fp32`; bf16 TorchScript export is
 useful for checkpoint inspection, but the generated pnnx/ncnn files are not
 runtime-safe yet.

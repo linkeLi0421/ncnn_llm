@@ -183,6 +183,22 @@ python3 export/qwen3_asr_export.py \
   --convert-ncnn
 ```
 
+如果需要每个音频 chunk 生成更长文本，可以导出更大的静态文本长度，例如：
+
+```bash
+python3 export/qwen3_asr_export.py \
+  --model-id Qwen/Qwen3-ASR-0.6B \
+  --out-dir ./assets/qwen3_asr_0.6b_text128 \
+  --device cuda \
+  --dtype fp32 \
+  --text-seq-len 128 \
+  --convert-ncnn
+```
+
+验证中，一个快速合成的数字序列在 `text_seq_len=64` runtime 下被截断在
+`... twelve thirteen`；使用 `text_seq_len=128` runtime 后可以和 PyTorch 一致：
+`One two three four five six seven eight nine ten eleven twelve thirteen fourteen.`。
+
 `--convert-ncnn` 当前需要配合 `--dtype fp32` 使用；bf16 TorchScript 导出可用于
 检查 checkpoint，但生成的 pnnx/ncnn 文件暂时不能作为可靠运行时文件。
 
