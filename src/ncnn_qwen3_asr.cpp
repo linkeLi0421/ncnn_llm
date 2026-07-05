@@ -309,6 +309,7 @@ Qwen3ASRResult ncnn_qwen3_asr::parse_output(const std::vector<int>& generated_id
 std::vector<int> ncnn_qwen3_asr::build_prompt_ids(int audio_token_count,
                                                   const std::string& context,
                                                   const std::string& language) const {
+    (void)language;
     if (audio_token_count <= 0) {
         return {};
     }
@@ -339,11 +340,6 @@ std::vector<int> ncnn_qwen3_asr::build_prompt_ids(int audio_token_count,
     ids.push_back(im_start);
     ids.push_back(assistant);
     ids.push_back(newline);
-
-    if (!language.empty() && tokenizer_) {
-        std::vector<int> language_ids = tokenizer_->encode("language " + language + "<asr_text>", false, false, false, false);
-        ids.insert(ids.end(), language_ids.begin(), language_ids.end());
-    }
     return ids;
 }
 

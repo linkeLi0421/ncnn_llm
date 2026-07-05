@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -150,6 +152,80 @@ static void print_mat_shape(const char* name, const ncnn::Mat& mat) {
               << "\n";
 }
 
+static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
+                                   const ncnn::Mat& audio,
+                                   const Args& args,
+                                   const std::string& prefix) {
+    std::vector<int> prompt_ids = asr.build_prompt_ids(audio.h, args.context, args.language);
+    if (prompt_ids.empty()) {
+        std::cerr << "Failed to build Qwen3-ASR prompt ids\n";
+        return {};
+    }
+    if ((int)prompt_ids.size() >= asr.text_seq_len()) {
+        std::cerr << "Prompt length " << prompt_ids.size()
+                  << " leaves no decode room in static text_seq_len "
+                  << asr.text_seq_len() << "\n";
+        return {};
+    }
+
+    std::cout << prefix << "prompt_len=" << prompt_ids.size()
+              << " audio_tokens=" << audio.h
+              << " text_seq_len=" << asr.text_seq_len()
+              << "\n";
+
+    std::vector<int> generated;
+    std::vector<int> running_ids = prompt_ids;
+    int decode_steps = args.max_new_tokens > 0 ? args.max_new_tokens : 1;
+    for (int i = 0; i < decode_steps && (int)running_ids.size() < asr.text_seq_len(); i++) {
+        int next = asr.decode_next_token(running_ids, audio);
+        if (next < 0) {
+            return {};
+        }
+        if (asr.should_stop_token(next)) {
+            std::cout << prefix << "stop_token=" << next << "\n";
+            break;
+        }
+        generated.push_back(next);
+        running_ids.push_back(next);
+        std::cout << prefix << "generated_token[" << i << "]=" << next << "\n";
+    }
+    Qwen3ASRResult result = asr.parse_output(generated);
+    std::cout << prefix << "generated_raw=" << result.raw_text << "\n";
+    std::cout << prefix << "language=" << result.language << "\n";
+    std::cout << prefix << "text=" << result.text << "\n";
+    return result;
+}
+
+static std::string join_text(const std::vector<std::string>& parts) {
+    std::string out;
+    for (size_t i = 0; i < parts.size(); i++) {
+        std::string part = parts[i];
+        if (part.empty()) {
+            continue;
+        }
+        if (i + 1 < parts.size()) {
+            while (!part.empty()) {
+                char ch = part.back();
+                if (ch != '.' && ch != '!' && ch != '?') {
+                    break;
+                }
+                part.pop_back();
+            }
+        }
+        if (!out.empty()) {
+            char last = out.back();
+            if (last != ' ' && last != '\n') {
+                out.push_back(' ');
+            }
+            if (!part.empty() && part[0] >= 'A' && part[0] <= 'Z') {
+                part[0] = (char)std::tolower((unsigned char)part[0]);
+            }
+        }
+        out += part;
+    }
+    return out;
+}
+
 int main(int argc, char** argv) {
     Args args = parse_args(argc, argv);
 
@@ -176,6 +252,42 @@ int main(int argc, char** argv) {
             std::cerr << "Only 16 kHz WAV is supported for now, got " << sample_rate << "\n";
             return 3;
         }
+
+        if (args.generate_from_features) {
+            constexpr int hop = 160;
+            const size_t chunk_samples = (size_t)args.frames * hop;
+            std::vector<std::string> chunk_texts;
+            std::string language;
+            int chunk_index = 0;
+            for (size_t start = 0; start < wav.size(); start += chunk_samples) {
+                size_t end = std::min(start + chunk_samples, wav.size());
+                std::vector<float> chunk(wav.begin() + (std::vector<float>::difference_type)start,
+                                         wav.begin() + (std::vector<float>::difference_type)end);
+                ncnn::Mat mel = wav_to_whisper_log_mel(chunk, sample_rate, args.mel_bins, args.frames);
+                if (chunk_index == 0 && !args.dump_mel_raw.empty() && !write_mat_raw(args.dump_mel_raw, mel)) {
+                    std::cerr << "Failed to write mel dump: " << args.dump_mel_raw << "\n";
+                    return 4;
+                }
+                audio = asr.run_audio_encoder(mel);
+                if (audio.total() == 0) {
+                    return 4;
+                }
+                std::string prefix = "chunk[" + std::to_string(chunk_index) + "]_";
+                print_mat_shape((prefix + "audio_encoder").c_str(), audio);
+                Qwen3ASRResult result = decode_audio(asr, audio, args, prefix);
+                if (!result.text.empty()) {
+                    chunk_texts.push_back(result.text);
+                }
+                if (language.empty() && !result.language.empty()) {
+                    language = result.language;
+                }
+                chunk_index++;
+            }
+            std::cout << "language=" << language << "\n";
+            std::cout << "text=" << join_text(chunk_texts) << "\n";
+            return 0;
+        }
+
         ncnn::Mat mel = wav_to_whisper_log_mel(wav, sample_rate, args.mel_bins, args.frames);
         if (!args.dump_mel_raw.empty() && !write_mat_raw(args.dump_mel_raw, mel)) {
             std::cerr << "Failed to write mel dump: " << args.dump_mel_raw << "\n";
@@ -215,43 +327,7 @@ int main(int argc, char** argv) {
             std::cerr << "--generate-from-features requires --audio-features-raw\n";
             return 8;
         }
-        std::vector<int> prompt_ids = asr.build_prompt_ids(audio.h, args.context, args.language);
-        if (prompt_ids.empty()) {
-            std::cerr << "Failed to build Qwen3-ASR prompt ids\n";
-            return 9;
-        }
-        if ((int)prompt_ids.size() >= asr.text_seq_len()) {
-            std::cerr << "Prompt length " << prompt_ids.size()
-                      << " leaves no decode room in static text_seq_len "
-                      << asr.text_seq_len() << "\n";
-            return 10;
-        }
-
-        std::cout << "prompt_len=" << prompt_ids.size()
-                  << " audio_tokens=" << audio.h
-                  << " text_seq_len=" << asr.text_seq_len()
-                  << "\n";
-
-        std::vector<int> generated;
-        std::vector<int> running_ids = prompt_ids;
-        int decode_steps = args.max_new_tokens > 0 ? args.max_new_tokens : 1;
-        for (int i = 0; i < decode_steps && (int)running_ids.size() < asr.text_seq_len(); i++) {
-            int next = asr.decode_next_token(running_ids, audio);
-            if (next < 0) {
-                return 11;
-            }
-            if (asr.should_stop_token(next)) {
-                std::cout << "stop_token=" << next << "\n";
-                break;
-            }
-            generated.push_back(next);
-            running_ids.push_back(next);
-            std::cout << "generated_token[" << i << "]=" << next << "\n";
-        }
-        Qwen3ASRResult result = asr.parse_output(generated);
-        std::cout << "generated_raw=" << result.raw_text << "\n";
-        std::cout << "language=" << result.language << "\n";
-        std::cout << "text=" << result.text << "\n";
+        decode_audio(asr, audio, args, "");
     }
 
     if (!args.token_ids.empty()) {
