@@ -200,6 +200,31 @@ xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
   --tokens 1,2,3,4,5,6,7,8
 ```
 
+Qwen3-ASR runner 也可以使用 CMake 构建：
+
+```bash
+cmake -S . -B build \
+  -Dncnn_DIR=/path/to/ncnn/install/lib/cmake/ncnn \
+  -DNCNN_LLM_NLOHMANN_JSON_INCLUDE_DIR=/path/to/include
+cmake --build build --target qwen3_asr_main -j
+```
+
+如果系统中已经安装了 `nlohmann_json` 的 CMake package，则不需要传
+`NCNN_LLM_NLOHMANN_JSON_INCLUDE_DIR`。
+
+当前主要语音验证样例来自 `pdx-cs-sound/wavs/voice.wav`。先转换成 runtime
+需要的 16 kHz mono PCM WAV：
+
+```bash
+ffmpeg -y -i voice.wav -ar 16000 -ac 1 pdx_voice_16k.wav
+./build/qwen3_asr_main \
+  --model /path/to/qwen3_asr_0_6b_runtime_text64 \
+  --audio-wav pdx_voice_16k.wav \
+  --generate-from-features \
+  --language English \
+  --max-new-tokens 64
+```
+
 WAV 路径当前支持 16 kHz PCM16 输入和固定静态文本长度。重采样、更长 chunk
 以及与 PyTorch 完全对齐的前端验证仍是后续运行时工作。
 

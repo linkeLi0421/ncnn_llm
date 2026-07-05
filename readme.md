@@ -203,6 +203,32 @@ xmake run qwen3_asr_main --model ./assets/qwen3_asr_0.6b \
   --tokens 1,2,3,4,5,6,7,8
 ```
 
+The Qwen3-ASR runner can also be built with CMake:
+
+```bash
+cmake -S . -B build \
+  -Dncnn_DIR=/path/to/ncnn/install/lib/cmake/ncnn \
+  -DNCNN_LLM_NLOHMANN_JSON_INCLUDE_DIR=/path/to/include
+cmake --build build --target qwen3_asr_main -j
+```
+
+If `nlohmann_json` is installed as a CMake package, the
+`NCNN_LLM_NLOHMANN_JSON_INCLUDE_DIR` option is not needed.
+
+The main speech validation sample currently comes from
+`pdx-cs-sound/wavs/voice.wav`. Convert it to the 16 kHz mono PCM WAV format
+expected by the runner:
+
+```bash
+ffmpeg -y -i voice.wav -ar 16000 -ac 1 pdx_voice_16k.wav
+./build/qwen3_asr_main \
+  --model /path/to/qwen3_asr_0_6b_runtime_text64 \
+  --audio-wav pdx_voice_16k.wav \
+  --generate-from-features \
+  --language English \
+  --max-new-tokens 64
+```
+
 The WAV path currently supports 16 kHz PCM16 input and a fixed static text
 sequence length. Resampling, longer chunking, and PyTorch-matched frontend
 validation are still runtime work.
