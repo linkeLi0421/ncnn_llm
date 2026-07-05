@@ -247,6 +247,13 @@ ffmpeg -y -i voice.wav -ar 16000 -ac 1 pdx_voice_16k.wav
   --max-new-tokens 64
 ```
 
+For long WAV input, the runner uses fixed-window chunking with overlap. The
+default overlap is 32 mel frames and can be changed with:
+
+```bash
+--chunk-overlap-frames 32
+```
+
 The WAV path currently supports 16 kHz PCM16 input and a fixed static text
 sequence length. Resampling, longer chunking, and PyTorch-matched frontend
 validation are still runtime work.

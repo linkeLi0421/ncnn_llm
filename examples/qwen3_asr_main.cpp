@@ -21,6 +21,7 @@ struct Args {
     std::string context;
     std::string language;
     int max_new_tokens = 0;
+    int chunk_overlap_frames = 32;
     bool generate_from_features = false;
     bool use_vulkan = false;
     int threads = 4;
@@ -33,6 +34,7 @@ static void print_usage(const char* prog) {
         << "                 [--tokens comma,separated,ids] [--generate-from-features]\n"
         << "                 [--dump-mel-raw FILE]\n"
         << "                 [--context TEXT] [--language NAME] [--max-new-tokens N]\n"
+        << "                 [--chunk-overlap-frames N]\n"
         << "                 [--threads N] [--vulkan]\n\n"
         << "Examples:\n"
         << "  " << prog << " --model ./assets/qwen3_asr_0.6b --audio-features-raw mel.f32 --mel-bins 128 --frames 256\n"
@@ -93,6 +95,9 @@ static Args parse_args(int argc, char** argv) {
         } else if (arg == "--max-new-tokens") {
             need_value("--max-new-tokens");
             args.max_new_tokens = std::stoi(argv[++i]);
+        } else if (arg == "--chunk-overlap-frames") {
+            need_value("--chunk-overlap-frames");
+            args.chunk_overlap_frames = std::stoi(argv[++i]);
         } else if (arg == "--generate-from-features") {
             args.generate_from_features = true;
         } else if (arg == "--threads") {
@@ -110,6 +115,90 @@ static Args parse_args(int argc, char** argv) {
         }
     }
     return args;
+}
+
+static std::string trim_copy(const std::string& text) {
+    size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return {};
+    }
+    size_t last = text.find_last_not_of(" \t\r\n");
+    return text.substr(first, last - first + 1);
+}
+
+static std::string strip_final_sentence_punctuation(std::string text) {
+    text = trim_copy(text);
+    while (!text.empty()) {
+        char ch = text.back();
+        if (ch != '.' && ch != '!' && ch != '?') {
+            break;
+        }
+        text.pop_back();
+        text = trim_copy(text);
+    }
+    return text;
+}
+
+static std::string normalize_word(const std::string& word) {
+    std::string out;
+    for (unsigned char ch : word) {
+        if (std::isalnum(ch)) {
+            out.push_back((char)std::tolower(ch));
+        }
+    }
+    return out;
+}
+
+static std::vector<std::string> split_words(const std::string& text) {
+    std::vector<std::string> words;
+    std::stringstream ss(text);
+    std::string word;
+    while (ss >> word) {
+        std::string normalized = normalize_word(word);
+        if (!normalized.empty()) {
+            words.push_back(normalized);
+        }
+    }
+    return words;
+}
+
+static std::string drop_leading_words(const std::string& text, size_t count) {
+    if (count == 0) {
+        return trim_copy(text);
+    }
+    size_t pos = 0;
+    size_t dropped = 0;
+    while (dropped < count) {
+        pos = text.find_first_not_of(" \t\r\n", pos);
+        if (pos == std::string::npos) {
+            return {};
+        }
+        pos = text.find_first_of(" \t\r\n", pos);
+        dropped++;
+        if (pos == std::string::npos) {
+            return {};
+        }
+    }
+    return trim_copy(text.substr(pos));
+}
+
+static size_t overlap_word_count(const std::string& left, const std::string& right) {
+    std::vector<std::string> left_words = split_words(left);
+    std::vector<std::string> right_words = split_words(right);
+    size_t max_overlap = std::min<size_t>(8, std::min(left_words.size(), right_words.size()));
+    for (size_t count = max_overlap; count > 0; count--) {
+        bool same = true;
+        for (size_t i = 0; i < count; i++) {
+            if (left_words[left_words.size() - count + i] != right_words[i]) {
+                same = false;
+                break;
+            }
+        }
+        if (same) {
+            return count;
+        }
+    }
+    return 0;
 }
 
 static bool read_file(const std::string& path, std::vector<float>& values) {
@@ -199,17 +288,20 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
 static std::string join_text(const std::vector<std::string>& parts) {
     std::string out;
     for (size_t i = 0; i < parts.size(); i++) {
-        std::string part = parts[i];
+        std::string part = trim_copy(parts[i]);
         if (part.empty()) {
             continue;
         }
         if (i + 1 < parts.size()) {
-            while (!part.empty()) {
-                char ch = part.back();
-                if (ch != '.' && ch != '!' && ch != '?') {
-                    break;
+            part = strip_final_sentence_punctuation(part);
+        }
+        if (!out.empty()) {
+            size_t repeated_words = overlap_word_count(out, part);
+            if (repeated_words > 0) {
+                part = drop_leading_words(part, repeated_words);
+                if (part.empty()) {
+                    continue;
                 }
-                part.pop_back();
             }
         }
         if (!out.empty()) {
@@ -255,11 +347,20 @@ int main(int argc, char** argv) {
 
         if (args.generate_from_features) {
             constexpr int hop = 160;
+            if (args.chunk_overlap_frames < 0 || args.chunk_overlap_frames >= args.frames) {
+                std::cerr << "--chunk-overlap-frames must be >= 0 and smaller than --frames\n";
+                return 3;
+            }
             const size_t chunk_samples = (size_t)args.frames * hop;
+            const size_t stride_samples = (size_t)(args.frames - args.chunk_overlap_frames) * hop;
+            const size_t min_tail_samples = chunk_samples / 2;
             std::vector<std::string> chunk_texts;
             std::string language;
             int chunk_index = 0;
-            for (size_t start = 0; start < wav.size(); start += chunk_samples) {
+            for (size_t start = 0; start < wav.size(); start += stride_samples) {
+                if (start > 0 && wav.size() - start < min_tail_samples) {
+                    break;
+                }
                 size_t end = std::min(start + chunk_samples, wav.size());
                 std::vector<float> chunk(wav.begin() + (std::vector<float>::difference_type)start,
                                          wav.begin() + (std::vector<float>::difference_type)end);

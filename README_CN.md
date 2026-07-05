@@ -241,6 +241,13 @@ ffmpeg -y -i voice.wav -ar 16000 -ac 1 pdx_voice_16k.wav
   --max-new-tokens 64
 ```
 
+长 WAV 输入会使用带 overlap 的固定窗口 chunking。默认 overlap 为 32 个 mel
+frames，可通过下面参数调整：
+
+```bash
+--chunk-overlap-frames 32
+```
+
 WAV 路径当前支持 16 kHz PCM16 输入和固定静态文本长度。重采样、更长 chunk
 以及与 PyTorch 完全对齐的前端验证仍是后续运行时工作。
 
