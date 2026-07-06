@@ -36,6 +36,7 @@ if(NCNN_LLM_BUILD_QWEN3_ASR)
     add_library(ncnn_qwen3_asr_runtime STATIC
         src/ncnn_qwen3_asr.cpp
         src/utils/audio_utils.cpp
+        src/utils/rope_embed.cpp
     )
     target_include_directories(ncnn_qwen3_asr_runtime PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src

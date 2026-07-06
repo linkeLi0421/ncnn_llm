@@ -23,6 +23,7 @@ struct Args {
     int max_new_tokens = 0;
     int chunk_overlap_frames = 32;
     bool generate_from_features = false;
+    bool use_kv_cache = false;
     bool use_vulkan = false;
     int threads = 4;
 };
@@ -34,7 +35,7 @@ static void print_usage(const char* prog) {
         << "                 [--tokens comma,separated,ids] [--generate-from-features]\n"
         << "                 [--dump-mel-raw FILE]\n"
         << "                 [--context TEXT] [--language NAME] [--max-new-tokens N]\n"
-        << "                 [--chunk-overlap-frames N]\n"
+        << "                 [--chunk-overlap-frames N] [--use-kv-cache]\n"
         << "                 [--threads N] [--vulkan]\n\n"
         << "Examples:\n"
         << "  " << prog << " --model ./assets/qwen3_asr_0.6b --audio-features-raw mel.f32 --mel-bins 128 --frames 256\n"
@@ -100,6 +101,8 @@ static Args parse_args(int argc, char** argv) {
             args.chunk_overlap_frames = std::stoi(argv[++i]);
         } else if (arg == "--generate-from-features") {
             args.generate_from_features = true;
+        } else if (arg == "--use-kv-cache") {
+            args.use_kv_cache = true;
         } else if (arg == "--threads") {
             need_value("--threads");
             args.threads = std::stoi(argv[++i]);
@@ -250,7 +253,9 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
         std::cerr << "Failed to build Qwen3-ASR prompt ids\n";
         return {};
     }
-    if ((int)prompt_ids.size() >= asr.text_seq_len()) {
+    const bool use_kv = args.use_kv_cache && asr.has_kv_decoder();
+    if ((!use_kv && (int)prompt_ids.size() >= asr.text_seq_len()) ||
+        (use_kv && (int)prompt_ids.size() > asr.text_seq_len())) {
         std::cerr << "Prompt length " << prompt_ids.size()
                   << " leaves no decode room in static text_seq_len "
                   << asr.text_seq_len() << "\n";
@@ -260,24 +265,50 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
     std::cout << prefix << "prompt_len=" << prompt_ids.size()
               << " audio_tokens=" << audio.h
               << " text_seq_len=" << asr.text_seq_len()
+              << " kv_decoder=" << (use_kv ? "true" : "false")
               << "\n";
 
     std::vector<int> generated;
-    std::vector<int> running_ids = prompt_ids;
     int decode_steps = args.max_new_tokens > 0 ? args.max_new_tokens : 1;
-    for (int i = 0; i < decode_steps && (int)running_ids.size() < asr.text_seq_len(); i++) {
-        int next = asr.decode_next_token(running_ids, audio);
+
+    if (use_kv) {
+        Qwen3ASRKVDecodeState state;
+        int next = asr.prefill_kv(prompt_ids, audio, state);
         if (next < 0) {
             return {};
         }
-        if (asr.should_stop_token(next)) {
-            std::cout << prefix << "stop_token=" << next << "\n";
-            break;
+        for (int i = 0; i < decode_steps; i++) {
+            if (asr.should_stop_token(next)) {
+                std::cout << prefix << "stop_token=" << next << "\n";
+                break;
+            }
+            generated.push_back(next);
+            std::cout << prefix << "generated_token[" << i << "]=" << next << "\n";
+            if (i + 1 >= decode_steps) {
+                break;
+            }
+            next = asr.decode_next_token_kv(next, state);
+            if (next < 0) {
+                return {};
+            }
         }
-        generated.push_back(next);
-        running_ids.push_back(next);
-        std::cout << prefix << "generated_token[" << i << "]=" << next << "\n";
+    } else {
+        std::vector<int> running_ids = prompt_ids;
+        for (int i = 0; i < decode_steps && (int)running_ids.size() < asr.text_seq_len(); i++) {
+            int next = asr.decode_next_token(running_ids, audio);
+            if (next < 0) {
+                return {};
+            }
+            if (asr.should_stop_token(next)) {
+                std::cout << prefix << "stop_token=" << next << "\n";
+                break;
+            }
+            generated.push_back(next);
+            running_ids.push_back(next);
+            std::cout << prefix << "generated_token[" << i << "]=" << next << "\n";
+        }
     }
+
     Qwen3ASRResult result = asr.parse_output(generated);
     std::cout << prefix << "generated_raw=" << result.raw_text << "\n";
     std::cout << prefix << "language=" << result.language << "\n";

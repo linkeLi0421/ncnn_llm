@@ -7,6 +7,8 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "utils/rope_embed.h"
+
 ncnn_qwen3_asr::ncnn_qwen3_asr(const std::string& model_path, bool use_vulkan, int num_threads)
     : ncnn_llm_base(use_vulkan, num_threads > 0 ? num_threads : 4) {
     ok_ = load_model_file(model_path);
@@ -40,6 +42,22 @@ bool ncnn_qwen3_asr::load_model_file(const std::string& model_path) {
         const std::string text_embed_bin = model_path + "/" + params["text_embed_bin"].get<std::string>();
         const std::string text_backbone_param = model_path + "/" + params["text_backbone_param"].get<std::string>();
         const std::string text_backbone_bin = model_path + "/" + params["text_backbone_bin"].get<std::string>();
+        const std::string text_prefill_kv_param =
+            params.contains("text_prefill_kv_param") && !params["text_prefill_kv_param"].get<std::string>().empty()
+                ? model_path + "/" + params["text_prefill_kv_param"].get<std::string>()
+                : "";
+        const std::string text_prefill_kv_bin =
+            params.contains("text_prefill_kv_bin") && !params["text_prefill_kv_bin"].get<std::string>().empty()
+                ? model_path + "/" + params["text_prefill_kv_bin"].get<std::string>()
+                : "";
+        const std::string text_decode_kv_param =
+            params.contains("text_decode_kv_param") && !params["text_decode_kv_param"].get<std::string>().empty()
+                ? model_path + "/" + params["text_decode_kv_param"].get<std::string>()
+                : "";
+        const std::string text_decode_kv_bin =
+            params.contains("text_decode_kv_bin") && !params["text_decode_kv_bin"].get<std::string>().empty()
+                ? model_path + "/" + params["text_decode_kv_bin"].get<std::string>()
+                : "";
         const std::string lm_head_param = model_path + "/" + params["lm_head_param"].get<std::string>();
         const std::string lm_head_bin = model_path + "/" + params["lm_head_bin"].get<std::string>();
 
@@ -47,6 +65,10 @@ bool ncnn_qwen3_asr::load_model_file(const std::string& model_path) {
         printf("  audio_encoder: %s / %s\n", audio_param.c_str(), audio_bin.c_str());
         printf("  text_embed:    %s / %s\n", text_embed_param.c_str(), text_embed_bin.c_str());
         printf("  text_backbone: %s / %s\n", text_backbone_param.c_str(), text_backbone_bin.c_str());
+        if (!text_prefill_kv_param.empty() && !text_decode_kv_param.empty()) {
+            printf("  text_prefill_kv: %s / %s\n", text_prefill_kv_param.c_str(), text_prefill_kv_bin.c_str());
+            printf("  text_decode_kv:  %s / %s\n", text_decode_kv_param.c_str(), text_decode_kv_bin.c_str());
+        }
         printf("  lm_head:       %s / %s\n", lm_head_param.c_str(), lm_head_bin.c_str());
 
         text_backbone_has_attention_mask_ = param_has_input_blob(text_backbone_param, "in1");
@@ -54,6 +76,15 @@ bool ncnn_qwen3_asr::load_model_file(const std::string& model_path) {
         if (!load_one_net(*audio_encoder_net_, audio_param, audio_bin)) return false;
         if (!load_one_net(*text_embed_net_, text_embed_param, text_embed_bin)) return false;
         if (!load_one_net(*text_backbone_net_, text_backbone_param, text_backbone_bin)) return false;
+        if (!text_prefill_kv_param.empty() && !text_decode_kv_param.empty()) {
+            text_prefill_kv_net_ = std::make_shared<ncnn::Net>();
+            text_decode_kv_net_ = std::make_shared<ncnn::Net>();
+            configure_net(*text_prefill_kv_net_);
+            configure_net(*text_decode_kv_net_);
+            if (!load_one_net(*text_prefill_kv_net_, text_prefill_kv_param, text_prefill_kv_bin)) return false;
+            if (!load_one_net(*text_decode_kv_net_, text_decode_kv_param, text_decode_kv_bin)) return false;
+            has_kv_decoder_ = true;
+        }
         if (!load_one_net(*lm_head_net_, lm_head_param, lm_head_bin)) return false;
 
         if (config.contains("setting")) {
@@ -73,11 +104,28 @@ bool ncnn_qwen3_asr::load_model_file(const std::string& model_path) {
             if (setting.contains("text_seq_len")) {
                 text_seq_len_ = setting["text_seq_len"].get<int>();
             }
+            if (setting.contains("kv_cache_len")) {
+                kv_cache_len_ = setting["kv_cache_len"].get<int>();
+            }
             if (setting.contains("text_config") && setting["text_config"].contains("hidden_size")) {
                 hidden_size_ = setting["text_config"]["hidden_size"].get<int>();
             }
             if (setting.contains("text_config") && setting["text_config"].contains("vocab_size")) {
                 vocab_size_ = setting["text_config"]["vocab_size"].get<int>();
+            }
+            if (setting.contains("text_config") && setting["text_config"].contains("num_hidden_layers")) {
+                num_hidden_layers_ = setting["text_config"]["num_hidden_layers"].get<int>();
+            }
+            if (setting.contains("text_config")) {
+                const auto& text_config = setting["text_config"];
+                if (text_config.contains("head_dim")) {
+                    rope_head_dim_ = text_config["head_dim"].get<int>();
+                } else if (text_config.contains("hidden_size") && text_config.contains("num_attention_heads")) {
+                    rope_head_dim_ = text_config["hidden_size"].get<int>() / text_config["num_attention_heads"].get<int>();
+                }
+                if (text_config.contains("rope_theta")) {
+                    rope_theta_ = text_config["rope_theta"].get<float>();
+                }
             }
         }
 
@@ -109,10 +157,12 @@ bool ncnn_qwen3_asr::load_model_file(const std::string& model_path) {
             }
         }
 
-        printf("  hidden_size=%d vocab_size=%d text_seq_len=%d\n", hidden_size_, vocab_size_, text_seq_len_);
+        printf("  hidden_size=%d vocab_size=%d text_seq_len=%d kv_cache_len=%d layers=%d rope_head_dim=%d rope_theta=%g\n",
+               hidden_size_, vocab_size_, text_seq_len_, kv_cache_len_, num_hidden_layers_, rope_head_dim_, rope_theta_);
         printf("  audio_token_id=%d audio_start_token_id=%d audio_end_token_id=%d user_token_id=%d\n",
                audio_token_id_, audio_start_token_id_, audio_end_token_id_, user_token_id_);
         printf("  text_backbone_attention_mask=%s\n", text_backbone_has_attention_mask_ ? "true" : "false");
+        printf("  text_kv_decoder=%s\n", has_kv_decoder_ ? "true" : "false");
         return true;
     } catch (const std::exception& e) {
         fprintf(stderr, "ncnn_qwen3_asr load failed: %s\n", e.what());
@@ -153,6 +203,24 @@ bool ncnn_qwen3_asr::param_has_input_blob(const std::string& param_path, const s
         }
     }
     return false;
+}
+
+static int input_cache_blob(ncnn::Extractor& ex, int layer, bool key, const ncnn::Mat& value) {
+    char numbered[16];
+    std::snprintf(numbered, sizeof(numbered), "in%d", 3 + layer * 2 + (key ? 0 : 1));
+    return ex.input(numbered, value);
+}
+
+static int extract_prefill_cache_blob(ncnn::Extractor& ex, int layer, bool key, ncnn::Mat& value) {
+    char numbered[16];
+    std::snprintf(numbered, sizeof(numbered), "out%d", 1 + layer * 2 + (key ? 0 : 1));
+    return ex.extract(numbered, value);
+}
+
+static int extract_decode_cache_blob(ncnn::Extractor& ex, int layer, bool key, ncnn::Mat& value) {
+    char numbered[16];
+    std::snprintf(numbered, sizeof(numbered), "out%d", 1 + layer * 2 + (key ? 0 : 1));
+    return ex.extract(numbered, value);
 }
 
 ncnn::Mat ncnn_qwen3_asr::run_audio_encoder(const ncnn::Mat& mel_features) const {
@@ -204,6 +272,88 @@ ncnn::Mat ncnn_qwen3_asr::run_text_backbone(const ncnn::Mat& input_embeds,
     if (ex.extract("out0", out) != 0) {
         fprintf(stderr, "Qwen3-ASR text_backbone extract failed\n");
     }
+    return out;
+}
+
+ncnn::Mat ncnn_qwen3_asr::run_text_prefill_kv(const ncnn::Mat& input_embeds,
+                                               const std::vector<int>& attention_mask,
+                                               Qwen3ASRKVDecodeState& state) const {
+    ncnn::Mat out;
+    if (!text_prefill_kv_net_ || num_hidden_layers_ <= 0) {
+        return out;
+    }
+
+    ncnn::Extractor ex = text_prefill_kv_net_->create_extractor();
+    if (ex.input("in0", input_embeds) != 0) {
+        fprintf(stderr, "Qwen3-ASR text_prefill_kv input failed\n");
+        return out;
+    }
+
+    state.kv_cache.clear();
+    for (int i = 0; i < num_hidden_layers_; i++) {
+        ncnn::Mat k_cache;
+        ncnn::Mat v_cache;
+        if (extract_prefill_cache_blob(ex, i, true, k_cache) != 0 ||
+            extract_prefill_cache_blob(ex, i, false, v_cache) != 0) {
+            fprintf(stderr, "Qwen3-ASR text_prefill_kv cache extract failed at layer %d\n", i);
+            state.kv_cache.clear();
+            return {};
+        }
+        state.kv_cache.emplace_back(std::move(k_cache), std::move(v_cache));
+    }
+
+    if (ex.extract("out0", out) != 0) {
+        fprintf(stderr, "Qwen3-ASR text_prefill_kv hidden extract failed\n");
+        state.kv_cache.clear();
+        return {};
+    }
+
+    state.position = (int)attention_mask.size();
+    state.ready = true;
+    return out;
+}
+
+ncnn::Mat ncnn_qwen3_asr::run_text_decode_kv(const ncnn::Mat& input_embed,
+                                             Qwen3ASRKVDecodeState& state) const {
+    ncnn::Mat out;
+    if (!text_decode_kv_net_ || !state.ready || (int)state.kv_cache.size() != num_hidden_layers_) {
+        return out;
+    }
+
+    ncnn::Extractor ex = text_decode_kv_net_->create_extractor();
+    ncnn::Mat cos_cache;
+    ncnn::Mat sin_cache;
+    generate_rope_embed_cache_full(1, rope_head_dim_ > 0 ? rope_head_dim_ : 128, state.position, cos_cache, sin_cache, rope_theta_);
+    if (ex.input("in0", input_embed) != 0 || ex.input("in1", cos_cache) != 0 || ex.input("in2", sin_cache) != 0) {
+        fprintf(stderr, "Qwen3-ASR text_decode_kv input failed\n");
+        return out;
+    }
+
+    for (int i = 0; i < num_hidden_layers_; i++) {
+        if (input_cache_blob(ex, i, true, state.kv_cache[i].first) != 0 ||
+            input_cache_blob(ex, i, false, state.kv_cache[i].second) != 0) {
+            fprintf(stderr, "Qwen3-ASR text_decode_kv cache input failed at layer %d\n", i);
+            return {};
+        }
+    }
+
+    for (int i = 0; i < num_hidden_layers_; i++) {
+        ncnn::Mat k_cache;
+        ncnn::Mat v_cache;
+        if (extract_decode_cache_blob(ex, i, true, k_cache) != 0 ||
+            extract_decode_cache_blob(ex, i, false, v_cache) != 0) {
+            fprintf(stderr, "Qwen3-ASR text_decode_kv cache extract failed at layer %d\n", i);
+            return {};
+        }
+        state.kv_cache[i] = std::make_pair(std::move(k_cache), std::move(v_cache));
+    }
+
+    if (ex.extract("out0", out) != 0) {
+        fprintf(stderr, "Qwen3-ASR text_decode_kv hidden extract failed\n");
+        return {};
+    }
+
+    state.position += 1;
     return out;
 }
 
@@ -410,4 +560,72 @@ int ncnn_qwen3_asr::decode_next_token(const std::vector<int>& input_ids, const n
     ncnn::Mat row(logits.w, (void*)logits.row((int)input_ids.size() - 1), sizeof(float), 1);
     row = row.clone();
     return select_next_token_from_logits(row);
+}
+
+int ncnn_qwen3_asr::prefill_kv(const std::vector<int>& input_ids,
+                               const ncnn::Mat& audio_embeds,
+                               Qwen3ASRKVDecodeState& state) const {
+    if (!has_kv_decoder_) {
+        return -1;
+    }
+    if ((int)input_ids.size() > text_seq_len_) {
+        fprintf(stderr, "Qwen3-ASR KV prefill length %zu exceeds static text_seq_len %d\n",
+                input_ids.size(), text_seq_len_);
+        return -1;
+    }
+
+    ncnn::Mat text_embeds = run_text_embed(input_ids);
+    if (text_embeds.total() == 0) {
+        return -1;
+    }
+
+    ncnn::Mat merged = merge_audio_embeddings(text_embeds, input_ids, audio_embeds);
+    if (merged.total() == 0) {
+        return -1;
+    }
+
+    std::vector<int> mask(input_ids.size(), 1);
+    ncnn::Mat hidden = run_text_prefill_kv(merged, mask, state);
+    if (hidden.total() == 0) {
+        return -1;
+    }
+
+    ncnn::Mat logits = run_lm_head(hidden);
+    if (logits.total() == 0) {
+        return -1;
+    }
+    ncnn::Mat row(logits.w, (void*)logits.row((int)input_ids.size() - 1), sizeof(float), 1);
+    row = row.clone();
+    state.position = (int)input_ids.size();
+    return select_next_token_from_logits(row);
+}
+
+int ncnn_qwen3_asr::decode_next_token_kv(int token_id, Qwen3ASRKVDecodeState& state) const {
+    if (!has_kv_decoder_ || !state.ready) {
+        return -1;
+    }
+    ncnn::Mat token_embed = run_text_embed({token_id});
+    if (token_embed.total() == 0) {
+        return -1;
+    }
+    ncnn::Mat hidden = run_text_decode_kv(token_embed, state);
+    if (hidden.total() == 0) {
+        return -1;
+    }
+    ncnn::Mat lm_hidden = hidden;
+    if (hidden.h == 1 && text_seq_len_ > 1 && hidden_size_ > 0) {
+        lm_hidden = ncnn::Mat(hidden_size_, text_seq_len_);
+        lm_hidden.fill(0.0f);
+        std::memcpy(lm_hidden.row(0), hidden.row(0), sizeof(float) * (size_t)hidden_size_);
+    }
+    ncnn::Mat logits = run_lm_head(lm_hidden);
+    if (logits.total() == 0) {
+        return -1;
+    }
+    if (lm_hidden.h > 1 && logits.h > 1) {
+        ncnn::Mat row(logits.w, (void*)logits.row(0), sizeof(float), 1);
+        row = row.clone();
+        return select_next_token_from_logits(row);
+    }
+    return select_next_token_from_logits(logits);
 }

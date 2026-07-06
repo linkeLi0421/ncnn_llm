@@ -5,7 +5,7 @@ import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -150,6 +150,139 @@ class Qwen3ASRTextBackboneTS(nn.Module):
         return self.text_model.norm(hidden_states)
 
 
+class Qwen3ASRTextPrefillKVTS(nn.Module):
+    def __init__(self, text_model: nn.Module, num_layers: int):
+        super().__init__()
+        self.text_model = text_model
+        self.num_layers = int(num_layers)
+
+    @staticmethod
+    def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2 :]
+        return torch.cat((-x2, x1), dim=-1)
+
+    @staticmethod
+    def _apply_rotary(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        cos = cos.unsqueeze(1)
+        sin = sin.unsqueeze(1)
+        return (q * cos) + (Qwen3ASRTextPrefillKVTS._rotate_half(q) * sin), (k * cos) + (
+            Qwen3ASRTextPrefillKVTS._rotate_half(k) * sin
+        )
+
+    @staticmethod
+    def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+        if n_rep == 1:
+            return hidden_states
+        batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+        hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+        return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+    @staticmethod
+    def _layer_forward(
+        layer: nn.Module,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        position_embeddings: Tuple[torch.Tensor, torch.Tensor],
+        past_k: Optional[torch.Tensor] = None,
+        past_v: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        residual = hidden_states
+        hidden_states = layer.input_layernorm(hidden_states)
+        attn = layer.self_attn
+
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, attn.head_dim)
+        query_states = attn.q_norm(attn.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        key_states = attn.k_norm(attn.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        value_states = attn.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+        cos, sin = position_embeddings
+        query_states, key_states = Qwen3ASRTextPrefillKVTS._apply_rotary(query_states, key_states, cos, sin)
+
+        if past_k is not None and past_v is not None:
+            key_states = torch.cat((past_k, key_states), dim=2)
+            value_states = torch.cat((past_v, value_states), dim=2)
+
+        attn_key = Qwen3ASRTextPrefillKVTS._repeat_kv(key_states, int(attn.num_key_value_groups))
+        attn_value = Qwen3ASRTextPrefillKVTS._repeat_kv(value_states, int(attn.num_key_value_groups))
+        attn_weights = torch.matmul(query_states, attn_key.transpose(2, 3)) * float(attn.scaling)
+        if attention_mask is not None:
+            attn_weights = attn_weights + attention_mask[:, :, :, : attn_key.shape[-2]]
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_output = torch.matmul(attn_weights, attn_value)
+        attn_output = attn_output.transpose(1, 2).reshape(*input_shape, -1).contiguous()
+        hidden_states = residual + attn.o_proj(attn_output)
+
+        residual = hidden_states
+        hidden_states = layer.post_attention_layernorm(hidden_states)
+        hidden_states = residual + layer.mlp(hidden_states)
+        return hidden_states, key_states, value_states
+
+    @staticmethod
+    def _causal_mask(seq_len: int, kv_len: int, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+        mask_value = torch.finfo(dtype).min
+        mask = torch.full((seq_len, kv_len), mask_value, dtype=dtype, device=device)
+        past_len = kv_len - seq_len
+        for i in range(seq_len):
+            mask[i, : past_len + i + 1] = 0
+        return mask.view(1, 1, seq_len, kv_len)
+
+    def forward(self, inputs_embeds: torch.Tensor, attention_mask: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+        del attention_mask
+        batch_size = inputs_embeds.shape[0]
+        seq_len = inputs_embeds.shape[1]
+        hidden_states = inputs_embeds
+
+        cache_position = torch.arange(seq_len, device=inputs_embeds.device)
+        position_ids = cache_position.view(1, 1, -1).expand(3, batch_size, -1)
+        causal_mask = self._causal_mask(seq_len, seq_len, inputs_embeds.dtype, inputs_embeds.device)
+        position_embeddings = self.text_model.rotary_emb(hidden_states, position_ids)
+
+        flat: List[torch.Tensor] = [hidden_states]
+        caches: List[Tuple[torch.Tensor, torch.Tensor]] = []
+        for layer in self.text_model.layers:
+            hidden_states, key_states, value_states = self._layer_forward(
+                layer, hidden_states, causal_mask, position_embeddings
+            )
+            caches.append((key_states, value_states))
+
+        hidden_states = self.text_model.norm(hidden_states)
+        flat[0] = hidden_states
+        for key_states, value_states in caches:
+            flat.append(key_states)
+            flat.append(value_states)
+        return tuple(flat)
+
+
+class Qwen3ASRTextDecodeKVTS(nn.Module):
+    def __init__(self, text_model: nn.Module, num_layers: int):
+        super().__init__()
+        self.text_model = text_model
+        self.num_layers = int(num_layers)
+
+    def forward(self, inputs_embeds: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, *flat_cache: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+        seq_len = inputs_embeds.shape[1]
+        past_len = flat_cache[0].shape[2]
+        hidden_states = inputs_embeds
+
+        position_embeddings = (cos, sin)
+
+        flat: List[torch.Tensor] = [hidden_states]
+        for i in range(self.num_layers):
+            past_k = flat_cache[i * 2]
+            past_v = flat_cache[i * 2 + 1]
+            hidden_states, key_states, value_states = Qwen3ASRTextPrefillKVTS._layer_forward(
+                self.text_model.layers[i], hidden_states, None, position_embeddings, past_k, past_v
+            )
+            flat.append(key_states)
+            flat.append(value_states)
+
+        hidden_states = self.text_model.norm(hidden_states)
+        flat[0] = hidden_states
+        return tuple(flat)
+
+
 class Qwen3ASRLmHeadTS(nn.Module):
     def __init__(self, lm_head: nn.Module):
         super().__init__()
@@ -166,6 +299,8 @@ class Qwen3ASRExportBundle:
     audio_encoder_path: Path
     text_embed_path: Path
     text_backbone_path: Path
+    text_prefill_kv_path: Path
+    text_decode_kv_path: Path
     lm_head_path: Path
     manifest_path: Path
 
@@ -451,6 +586,41 @@ def _trace_text_backbone(
     traced.save(str(out_path))
 
 
+def _trace_text_kv(
+    text_model: nn.Module,
+    prefill_path: Path,
+    decode_path: Path,
+    device: str,
+    dtype: torch.dtype,
+    hidden_size: int,
+    prefill_len: int,
+    cache_len: int,
+    num_layers: int,
+    num_key_value_heads: int,
+    head_dim: int,
+) -> None:
+    if hasattr(text_model, "config"):
+        text_model.config._attn_implementation = "eager"
+        text_model.config.use_cache = True
+
+    prefill = Qwen3ASRTextPrefillKVTS(text_model, num_layers=num_layers).to(device).eval()
+    prefill_embeds = torch.randn(1, prefill_len, hidden_size, device=device, dtype=dtype)
+    prefill_mask = torch.ones(1, prefill_len, device=device, dtype=torch.long)
+    traced_prefill = torch.jit.trace(prefill, (prefill_embeds, prefill_mask), strict=False)
+    traced_prefill.save(str(prefill_path))
+
+    decode = Qwen3ASRTextDecodeKVTS(text_model, num_layers=num_layers).to(device).eval()
+    decode_embeds = torch.randn(1, 1, hidden_size, device=device, dtype=dtype)
+    decode_cos = torch.randn(1, 1, head_dim, device=device, dtype=dtype)
+    decode_sin = torch.randn(1, 1, head_dim, device=device, dtype=dtype)
+    flat_cache: List[torch.Tensor] = []
+    for _ in range(num_layers):
+        flat_cache.append(torch.randn(1, num_key_value_heads, cache_len, head_dim, device=device, dtype=dtype))
+        flat_cache.append(torch.randn(1, num_key_value_heads, cache_len, head_dim, device=device, dtype=dtype))
+    traced_decode = torch.jit.trace(decode, tuple([decode_embeds, decode_cos, decode_sin] + flat_cache), strict=False)
+    traced_decode.save(str(decode_path))
+
+
 def _trace_lm_head(
     lm_head: nn.Module,
     out_path: Path,
@@ -472,6 +642,28 @@ def _run_pnnx(pnnx_bin: str, pt_path: Path, extra_args: Optional[list[str]] = No
     subprocess.run(cmd, cwd=str(pt_path.parent), check=True)
 
 
+def _relax_decode_cache_reshape(param_path: Path, cache_len: int, head_dim: int, num_attention_heads: int) -> None:
+    """Allow the one-token KV decoder to feed its growing cache back into itself."""
+    if not param_path.exists():
+        return
+
+    fixed = f"0={head_dim} 1={cache_len + 1} 2={num_attention_heads}"
+    relaxed = f"0={head_dim} 1=-1 2={num_attention_heads}"
+    lines = param_path.read_text().splitlines()
+    replaced = 0
+    out_lines = []
+    for line in lines:
+        if line.startswith("Reshape") and fixed in line:
+            line = line.replace(fixed, relaxed)
+            replaced += 1
+        out_lines.append(line)
+
+    param_path.write_text("\n".join(out_lines) + "\n")
+    if replaced == 0:
+        raise RuntimeError(f"did not relax any decode cache reshape in {param_path}")
+    print(f"Relaxed {replaced} decode cache reshape layers in {param_path.name}")
+
+
 def _save_pnnx_input(path: Path, value: np.ndarray) -> str:
     np.save(path, value)
     return f"input={path.name}"
@@ -487,6 +679,8 @@ def export_qwen3_asr(
     convert_ncnn: bool = False,
     pnnx_bin: str = "pnnx",
     text_seq_len: int = 8,
+    export_kv_cache: bool = False,
+    kv_cache_len: Optional[int] = None,
 ) -> Qwen3ASRExportBundle:
     device = _device_from_arg(device)
     default_dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
@@ -515,6 +709,8 @@ def export_qwen3_asr(
     audio_encoder_path = root / "audio_encoder.pt"
     text_embed_path = root / "text_embed.pt"
     text_backbone_path = root / "text_backbone.pt"
+    text_prefill_kv_path = root / "text_prefill_kv.pt"
+    text_decode_kv_path = root / "text_decode_kv.pt"
     lm_head_path = root / "lm_head.pt"
 
     if export_audio_encoder:
@@ -548,6 +744,23 @@ def export_qwen3_asr(
             hidden_size=int(text_cfg.hidden_size),
             seq_len=text_seq_len,
         )
+        if export_kv_cache:
+            num_attention_heads = int(text_cfg.num_attention_heads)
+            num_key_value_heads = int(getattr(text_cfg, "num_key_value_heads", num_attention_heads))
+            head_dim = int(getattr(text_cfg, "head_dim", int(text_cfg.hidden_size) // num_attention_heads))
+            _trace_text_kv(
+                text_model,
+                text_prefill_kv_path,
+                text_decode_kv_path,
+                device=device,
+                dtype=torch_dtype,
+                hidden_size=int(text_cfg.hidden_size),
+                prefill_len=text_seq_len,
+                cache_len=int(kv_cache_len or max(1, text_seq_len - 1)),
+                num_layers=int(text_cfg.num_hidden_layers),
+                num_key_value_heads=num_key_value_heads,
+                head_dim=head_dim,
+            )
         _trace_lm_head(
             lm_head,
             lm_head_path,
@@ -571,6 +784,12 @@ def export_qwen3_asr(
             "text_backbone_pt": text_backbone_path.name if export_text_stack else "",
             "text_backbone_param": "text_backbone.ncnn.param" if export_text_stack else "",
             "text_backbone_bin": "text_backbone.ncnn.bin" if export_text_stack else "",
+            "text_prefill_kv_pt": text_prefill_kv_path.name if export_text_stack and export_kv_cache else "",
+            "text_prefill_kv_param": "text_prefill_kv.ncnn.param" if export_text_stack and export_kv_cache else "",
+            "text_prefill_kv_bin": "text_prefill_kv.ncnn.bin" if export_text_stack and export_kv_cache else "",
+            "text_decode_kv_pt": text_decode_kv_path.name if export_text_stack and export_kv_cache else "",
+            "text_decode_kv_param": "text_decode_kv.ncnn.param" if export_text_stack and export_kv_cache else "",
+            "text_decode_kv_bin": "text_decode_kv.ncnn.bin" if export_text_stack and export_kv_cache else "",
             "lm_head_pt": lm_head_path.name if export_text_stack else "",
             "lm_head_param": "lm_head.ncnn.param" if export_text_stack else "",
             "lm_head_bin": "lm_head.ncnn.bin" if export_text_stack else "",
@@ -585,6 +804,8 @@ def export_qwen3_asr(
             "audio_config": _to_jsonable(audio_cfg.to_dict() if hasattr(audio_cfg, "to_dict") else audio_cfg.__dict__),
             "text_config": _to_jsonable(text_cfg.to_dict() if hasattr(text_cfg, "to_dict") else text_cfg.__dict__),
             "text_seq_len": int(text_seq_len),
+            "kv_cache_len": int(kv_cache_len or max(1, text_seq_len - 1)),
+            "kv_cache_exported": bool(export_kv_cache),
             "support_languages": _to_jsonable(getattr(model.config, "support_languages", None)),
         },
     }
@@ -619,6 +840,33 @@ def export_qwen3_asr(
             _save_pnnx_input(text_ids_input, np.arange(text_seq_len, dtype=np.int64).reshape(1, text_seq_len))
             _run_pnnx(pnnx_bin, text_embed_path, [f"input={text_ids_input.name}", "fp16=0"])
             _run_pnnx(pnnx_bin, text_backbone_path, [f"inputshape=[1,{text_seq_len},{int(text_cfg.hidden_size)}],[1,{text_seq_len}]", "fp16=0"])
+            if export_kv_cache:
+                num_attention_heads = int(text_cfg.num_attention_heads)
+                num_key_value_heads = int(getattr(text_cfg, "num_key_value_heads", num_attention_heads))
+                head_dim = int(getattr(text_cfg, "head_dim", int(text_cfg.hidden_size) // num_attention_heads))
+                cache_len = int(kv_cache_len or max(1, text_seq_len - 1))
+                cache_shapes = ",".join(
+                    [f"[1,{num_key_value_heads},{cache_len},{head_dim}]" for _ in range(int(text_cfg.num_hidden_layers) * 2)]
+                )
+                _run_pnnx(
+                    pnnx_bin,
+                    text_prefill_kv_path,
+                    [f"inputshape=[1,{text_seq_len},{int(text_cfg.hidden_size)}],[1,{text_seq_len}]", "fp16=0"],
+                )
+                _run_pnnx(
+                    pnnx_bin,
+                    text_decode_kv_path,
+                    [
+                        f"inputshape=[1,1,{int(text_cfg.hidden_size)}],[1,1,{head_dim}],[1,1,{head_dim}],{cache_shapes}",
+                        "fp16=0",
+                    ],
+                )
+                _relax_decode_cache_reshape(
+                    root / "text_decode_kv.ncnn.param",
+                    cache_len=cache_len,
+                    head_dim=head_dim,
+                    num_attention_heads=num_attention_heads,
+                )
             _run_pnnx(pnnx_bin, lm_head_path, [f"inputshape=[1,{text_seq_len},{int(text_cfg.hidden_size)}]", "fp16=0"])
 
     return Qwen3ASRExportBundle(
@@ -627,6 +875,8 @@ def export_qwen3_asr(
         audio_encoder_path=audio_encoder_path,
         text_embed_path=text_embed_path,
         text_backbone_path=text_backbone_path,
+        text_prefill_kv_path=text_prefill_kv_path,
+        text_decode_kv_path=text_decode_kv_path,
         lm_head_path=lm_head_path,
         manifest_path=manifest_path,
     )
@@ -643,6 +893,8 @@ def main() -> None:
     parser.add_argument("--convert-ncnn", action="store_true", help="Run pnnx on exported TorchScript modules.")
     parser.add_argument("--pnnx-bin", default="pnnx", help="Path to pnnx executable.")
     parser.add_argument("--text-seq-len", type=int, default=8, help="Static text sequence length for traced text modules.")
+    parser.add_argument("--export-kv-cache", action="store_true", help="Also export cache-aware text prefill/decode modules.")
+    parser.add_argument("--kv-cache-len", type=int, default=None, help="Static past length for the traced one-token KV decoder.")
     args = parser.parse_args()
 
     bundle = export_qwen3_asr(
@@ -655,6 +907,8 @@ def main() -> None:
         convert_ncnn=args.convert_ncnn,
         pnnx_bin=args.pnnx_bin,
         text_seq_len=args.text_seq_len,
+        export_kv_cache=args.export_kv_cache,
+        kv_cache_len=args.kv_cache_len,
     )
 
     print(f"Saved manifest: {bundle.manifest_path}")
@@ -664,6 +918,10 @@ def main() -> None:
         print(f"Saved text embed: {bundle.text_embed_path}")
     if bundle.text_backbone_path.exists():
         print(f"Saved text backbone: {bundle.text_backbone_path}")
+    if bundle.text_prefill_kv_path.exists():
+        print(f"Saved text KV prefill: {bundle.text_prefill_kv_path}")
+    if bundle.text_decode_kv_path.exists():
+        print(f"Saved text KV decode: {bundle.text_decode_kv_path}")
     if bundle.lm_head_path.exists():
         print(f"Saved lm head: {bundle.lm_head_path}")
 
