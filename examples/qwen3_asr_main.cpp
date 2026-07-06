@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -244,10 +245,16 @@ static void print_mat_shape(const char* name, const ncnn::Mat& mat) {
               << "\n";
 }
 
+static double elapsed_ms(std::chrono::steady_clock::time_point start,
+                         std::chrono::steady_clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
 static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
                                    const ncnn::Mat& audio,
                                    const Args& args,
                                    const std::string& prefix) {
+    const auto decode_start = std::chrono::steady_clock::now();
     std::vector<int> prompt_ids = asr.build_prompt_ids(audio.h, args.context, args.language);
     if (prompt_ids.empty()) {
         std::cerr << "Failed to build Qwen3-ASR prompt ids\n";
@@ -273,10 +280,13 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
 
     if (use_kv) {
         Qwen3ASRKVDecodeState state;
+        const auto prefill_start = std::chrono::steady_clock::now();
         int next = asr.prefill_kv(prompt_ids, audio, state);
+        const auto prefill_end = std::chrono::steady_clock::now();
         if (next < 0) {
             return {};
         }
+        std::cout << prefix << "prefill_time_ms=" << elapsed_ms(prefill_start, prefill_end) << "\n";
         for (int i = 0; i < decode_steps; i++) {
             if (asr.should_stop_token(next)) {
                 std::cout << prefix << "stop_token=" << next << "\n";
@@ -287,18 +297,26 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
             if (i + 1 >= decode_steps) {
                 break;
             }
+            const auto step_start = std::chrono::steady_clock::now();
             next = asr.decode_next_token_kv(next, state);
+            const auto step_end = std::chrono::steady_clock::now();
             if (next < 0) {
                 return {};
             }
+            std::cout << prefix << "decode_step_time_ms[" << (i + 1) << "]="
+                      << elapsed_ms(step_start, step_end) << "\n";
         }
     } else {
         std::vector<int> running_ids = prompt_ids;
         for (int i = 0; i < decode_steps && (int)running_ids.size() < asr.text_seq_len(); i++) {
+            const auto step_start = std::chrono::steady_clock::now();
             int next = asr.decode_next_token(running_ids, audio);
+            const auto step_end = std::chrono::steady_clock::now();
             if (next < 0) {
                 return {};
             }
+            std::cout << prefix << "decode_step_time_ms[" << i << "]="
+                      << elapsed_ms(step_start, step_end) << "\n";
             if (asr.should_stop_token(next)) {
                 std::cout << prefix << "stop_token=" << next << "\n";
                 break;
@@ -313,6 +331,8 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
     std::cout << prefix << "generated_raw=" << result.raw_text << "\n";
     std::cout << prefix << "language=" << result.language << "\n";
     std::cout << prefix << "text=" << result.text << "\n";
+    const auto decode_end = std::chrono::steady_clock::now();
+    std::cout << prefix << "decode_total_time_ms=" << elapsed_ms(decode_start, decode_end) << "\n";
     return result;
 }
 
@@ -400,11 +420,14 @@ int main(int argc, char** argv) {
                     std::cerr << "Failed to write mel dump: " << args.dump_mel_raw << "\n";
                     return 4;
                 }
+                const auto audio_start = std::chrono::steady_clock::now();
                 audio = asr.run_audio_encoder(mel);
+                const auto audio_end = std::chrono::steady_clock::now();
                 if (audio.total() == 0) {
                     return 4;
                 }
                 std::string prefix = "chunk[" + std::to_string(chunk_index) + "]_";
+                std::cout << prefix << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
                 print_mat_shape((prefix + "audio_encoder").c_str(), audio);
                 Qwen3ASRResult result = decode_audio(asr, audio, args, prefix);
                 if (!result.text.empty()) {
@@ -425,10 +448,13 @@ int main(int argc, char** argv) {
             std::cerr << "Failed to write mel dump: " << args.dump_mel_raw << "\n";
             return 4;
         }
+        const auto audio_start = std::chrono::steady_clock::now();
         audio = asr.run_audio_encoder(mel);
+        const auto audio_end = std::chrono::steady_clock::now();
         if (audio.total() == 0) {
             return 4;
         }
+        std::cout << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
         print_mat_shape("audio_encoder", audio);
     }
 
@@ -447,10 +473,13 @@ int main(int argc, char** argv) {
 
         ncnn::Mat mel(args.frames, args.mel_bins, (void*)features.data(), sizeof(float), 1);
         mel = mel.clone();
+        const auto audio_start = std::chrono::steady_clock::now();
         audio = asr.run_audio_encoder(mel);
+        const auto audio_end = std::chrono::steady_clock::now();
         if (audio.total() == 0) {
             return 4;
         }
+        std::cout << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
         print_mat_shape("audio_encoder", audio);
     }
 
