@@ -25,6 +25,7 @@ struct Args {
     int chunk_overlap_frames = 32;
     bool generate_from_features = false;
     bool use_kv_cache = false;
+    bool timing = false;
     bool use_vulkan = false;
     int threads = 4;
 };
@@ -36,7 +37,7 @@ static void print_usage(const char* prog) {
         << "                 [--tokens comma,separated,ids] [--generate-from-features]\n"
         << "                 [--dump-mel-raw FILE]\n"
         << "                 [--context TEXT] [--language NAME] [--max-new-tokens N]\n"
-        << "                 [--chunk-overlap-frames N] [--use-kv-cache]\n"
+        << "                 [--chunk-overlap-frames N] [--use-kv-cache] [--timing]\n"
         << "                 [--threads N] [--vulkan]\n\n"
         << "Examples:\n"
         << "  " << prog << " --model ./assets/qwen3_asr_0.6b --audio-features-raw mel.f32 --mel-bins 128 --frames 256\n"
@@ -104,6 +105,8 @@ static Args parse_args(int argc, char** argv) {
             args.generate_from_features = true;
         } else if (arg == "--use-kv-cache") {
             args.use_kv_cache = true;
+        } else if (arg == "--timing") {
+            args.timing = true;
         } else if (arg == "--threads") {
             need_value("--threads");
             args.threads = std::stoi(argv[++i]);
@@ -286,7 +289,9 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
         if (next < 0) {
             return {};
         }
-        std::cout << prefix << "prefill_time_ms=" << elapsed_ms(prefill_start, prefill_end) << "\n";
+        if (args.timing) {
+            std::cout << prefix << "prefill_time_ms=" << elapsed_ms(prefill_start, prefill_end) << "\n";
+        }
         for (int i = 0; i < decode_steps; i++) {
             if (asr.should_stop_token(next)) {
                 std::cout << prefix << "stop_token=" << next << "\n";
@@ -303,8 +308,10 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
             if (next < 0) {
                 return {};
             }
-            std::cout << prefix << "decode_step_time_ms[" << (i + 1) << "]="
-                      << elapsed_ms(step_start, step_end) << "\n";
+            if (args.timing) {
+                std::cout << prefix << "decode_step_time_ms[" << (i + 1) << "]="
+                          << elapsed_ms(step_start, step_end) << "\n";
+            }
         }
     } else {
         std::vector<int> running_ids = prompt_ids;
@@ -315,8 +322,10 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
             if (next < 0) {
                 return {};
             }
-            std::cout << prefix << "decode_step_time_ms[" << i << "]="
-                      << elapsed_ms(step_start, step_end) << "\n";
+            if (args.timing) {
+                std::cout << prefix << "decode_step_time_ms[" << i << "]="
+                          << elapsed_ms(step_start, step_end) << "\n";
+            }
             if (asr.should_stop_token(next)) {
                 std::cout << prefix << "stop_token=" << next << "\n";
                 break;
@@ -332,7 +341,9 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
     std::cout << prefix << "language=" << result.language << "\n";
     std::cout << prefix << "text=" << result.text << "\n";
     const auto decode_end = std::chrono::steady_clock::now();
-    std::cout << prefix << "decode_total_time_ms=" << elapsed_ms(decode_start, decode_end) << "\n";
+    if (args.timing) {
+        std::cout << prefix << "decode_total_time_ms=" << elapsed_ms(decode_start, decode_end) << "\n";
+    }
     return result;
 }
 
@@ -427,7 +438,9 @@ int main(int argc, char** argv) {
                     return 4;
                 }
                 std::string prefix = "chunk[" + std::to_string(chunk_index) + "]_";
-                std::cout << prefix << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
+                if (args.timing) {
+                    std::cout << prefix << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
+                }
                 print_mat_shape((prefix + "audio_encoder").c_str(), audio);
                 Qwen3ASRResult result = decode_audio(asr, audio, args, prefix);
                 if (!result.text.empty()) {
@@ -454,7 +467,9 @@ int main(int argc, char** argv) {
         if (audio.total() == 0) {
             return 4;
         }
-        std::cout << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
+        if (args.timing) {
+            std::cout << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
+        }
         print_mat_shape("audio_encoder", audio);
     }
 
@@ -479,7 +494,9 @@ int main(int argc, char** argv) {
         if (audio.total() == 0) {
             return 4;
         }
-        std::cout << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
+        if (args.timing) {
+            std::cout << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
+        }
         print_mat_shape("audio_encoder", audio);
     }
 
