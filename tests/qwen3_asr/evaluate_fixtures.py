@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Evaluate Qwen3-ASR fixture outputs.
+
+This script is intentionally lightweight: it consumes result JSON files already
+produced by qwen3_asr_main and optional PyTorch baseline JSON files. It does not
+run PyTorch or ncnn by itself.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import re
+import statistics
+import sys
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+
+CJK_PUNCT = "，。！？、；：（）《》“”‘’【】"
+ASCII_PUNCT_RE = re.compile(r"[!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~]")
+SPACE_RE = re.compile(r"\s+")
+SPECIAL_TOKEN_RE = re.compile(r"<\|[^|]+?\|>|<[^>]+>")
+
+
+def load_json(path: str | None) -> Any | None:
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return None
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def strip_qwen3_asr_prefix(text: str) -> str:
+    text = text.strip()
+    if text.startswith("language "):
+        # Common raw form: "language Chinese你好。" or "language EnglishHello."
+        text = re.sub(r"^language\s+(Chinese|English|Japanese|Korean|Cantonese)", "", text).strip()
+    return text
+
+
+def clean_text(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text or "")
+    text = SPECIAL_TOKEN_RE.sub("", text)
+    text = strip_qwen3_asr_prefix(text)
+    text = text.replace("\u3000", " ")
+    text = SPACE_RE.sub(" ", text).strip()
+    return text
+
+
+def normalized_text(text: str) -> str:
+    text = clean_text(text).lower()
+    for ch in CJK_PUNCT:
+        text = text.replace(ch, "")
+    text = ASCII_PUNCT_RE.sub("", text)
+    text = SPACE_RE.sub("", text)
+    return text
+
+
+def result_texts(result: dict[str, Any] | None) -> dict[str, str]:
+    if not result:
+        return {"raw": "", "clean": "", "normalized": ""}
+    raw = str(result.get("raw_text") or result.get("text") or "")
+    text = str(result.get("text") or raw)
+    return {
+        "raw": raw,
+        "clean": clean_text(text),
+        "normalized": normalized_text(text),
+    }
+
+
+def expected_texts(text: str) -> dict[str, str]:
+    return {
+        "raw": text,
+        "clean": clean_text(text),
+        "normalized": normalized_text(text),
+    }
+
+
+def mel_summary_first(summary: Any | None) -> dict[str, Any] | None:
+    if summary is None:
+        return None
+    if isinstance(summary, list):
+        return summary[0] if summary else None
+    if isinstance(summary, dict):
+        return summary
+    return None
+
+
+def compare_mel(ncnn_mel: Any | None, pytorch_mel: Any | None) -> dict[str, Any]:
+    ncnn = mel_summary_first(ncnn_mel)
+    pytorch = mel_summary_first(pytorch_mel)
+    out: dict[str, Any] = {
+        "ncnn_present": ncnn is not None,
+        "pytorch_present": pytorch is not None,
+        "status": "missing_pytorch" if ncnn is not None and pytorch is None else "missing"
+    }
+    if ncnn is None:
+        return out
+    out.update({
+        "sample_rate": ncnn.get("sample_rate"),
+        "shape": [ncnn.get("h"), ncnn.get("w")],
+        "dtype": ncnn.get("dtype"),
+        "mean": ncnn.get("mean"),
+        "std": ncnn.get("std"),
+        "min": ncnn.get("min"),
+        "max": ncnn.get("max"),
+        "first_values": ncnn.get("first_values", [])[:6],
+    })
+    if pytorch is None:
+        return out
+
+    checks = []
+    for key in ("sample_rate", "dtype", "h", "w", "mel_bins", "frames", "n_fft", "hop_length"):
+        checks.append(ncnn.get(key) == pytorch.get(key))
+    out["status"] = "ok" if all(checks) else "mismatch"
+    out["pytorch_shape"] = [pytorch.get("h"), pytorch.get("w")]
+    for key in ("mean", "std", "min", "max"):
+        nv = ncnn.get(key)
+        pv = pytorch.get(key)
+        if isinstance(nv, (int, float)) and isinstance(pv, (int, float)):
+            out[f"{key}_abs_diff"] = abs(float(nv) - float(pv))
+    return out
+
+
+def module_status(result: dict[str, Any] | None, module_summary: Any | None) -> dict[str, Any]:
+    out = {
+        "speech_encoder_summary": "missing",
+        "projector_or_adaptor_summary": "missing",
+        "first_decoder_logits_summary": "missing",
+        "module_summary_file": module_summary is not None,
+    }
+    if isinstance(result, dict):
+        chunks = result.get("chunks", [])
+        if isinstance(chunks, list) and chunks and isinstance(chunks[0], dict):
+            if "audio_embedding" in chunks[0]:
+                out["speech_encoder_summary"] = "ncnn_audio_embedding_present"
+        if "audio_embedding" in result:
+            out["speech_encoder_summary"] = "ncnn_audio_embedding_present"
+        if "lm_head" in result:
+            out["first_decoder_logits_summary"] = "ncnn_lm_head_smoke_present"
+    if isinstance(module_summary, dict):
+        for key in ("speech_encoder_summary", "projector_or_adaptor_summary", "first_decoder_logits_summary"):
+            if key in module_summary:
+                out[key] = "present"
+    return out
+
+
+def chunk_summary(result: dict[str, Any] | None) -> str:
+    if not result:
+        return ""
+    chunks = result.get("chunks", [])
+    if not isinstance(chunks, list):
+        return ""
+    return str(len(chunks))
+
+
+def short(text: str, limit: int = 80) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def evaluate_fixture(fixture: dict[str, Any]) -> dict[str, Any]:
+    ncnn_result = load_json(fixture.get("ncnn_result_json"))
+    pytorch_result = load_json(fixture.get("pytorch_result_json"))
+    ncnn_mel = load_json(fixture.get("ncnn_mel_summary_json"))
+    pytorch_mel = load_json(fixture.get("pytorch_mel_summary_json"))
+    modules = load_json(fixture.get("module_summary_json"))
+
+    expected = expected_texts(fixture["expected_text"])
+    ncnn = result_texts(ncnn_result)
+    pytorch = result_texts(pytorch_result)
+
+    ncnn_pass = bool(ncnn["normalized"]) and ncnn["normalized"] == expected["normalized"]
+    pytorch_pass = None
+    if pytorch_result is not None:
+        pytorch_pass = bool(pytorch["normalized"]) and pytorch["normalized"] == expected["normalized"]
+
+    return {
+        "id": fixture["id"],
+        "category": fixture["category"],
+        "audio": fixture["audio"],
+        "expected": expected,
+        "ncnn": ncnn,
+        "pytorch": pytorch if pytorch_result is not None else None,
+        "ncnn_pass": ncnn_pass,
+        "pytorch_pass": pytorch_pass,
+        "ncnn_chunks": chunk_summary(ncnn_result),
+        "ncnn_rtf": ncnn_result.get("rtf") if isinstance(ncnn_result, dict) else None,
+        "chunking_strategy": ncnn_result.get("chunking_strategy") if isinstance(ncnn_result, dict) else None,
+        "mel": compare_mel(ncnn_mel, pytorch_mel),
+        "modules": module_status(ncnn_result, modules),
+    }
+
+
+def markdown_report(results: list[dict[str, Any]]) -> str:
+    lines = [
+        "| fixture | category | ncnn pass | chunks | RTF | normalized expected | normalized ncnn | notes |",
+        "| --- | --- | --- | ---: | ---: | --- | --- | --- |",
+    ]
+    for r in results:
+        rtf = r["ncnn_rtf"]
+        rtf_text = f"{rtf:.2f}" if isinstance(rtf, (int, float)) and math.isfinite(rtf) else ""
+        notes = []
+        if r["mel"]["status"] == "missing_pytorch":
+            notes.append("PyTorch mel 待补")
+        if r["chunking_strategy"]:
+            notes.append(str(r["chunking_strategy"]))
+        lines.append(
+            "| `{id}` | {category} | {passed} | {chunks} | {rtf} | `{expected}` | `{ncnn}` | {notes} |".format(
+                id=r["id"],
+                category=r["category"],
+                passed="PASS" if r["ncnn_pass"] else "FAIL",
+                chunks=r["ncnn_chunks"],
+                rtf=rtf_text,
+                expected=short(r["expected"]["normalized"]),
+                ncnn=short(r["ncnn"]["normalized"]),
+                notes=", ".join(notes),
+            )
+        )
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fixtures", default="tests/qwen3_asr/fixtures.local.json")
+    parser.add_argument("--json-out")
+    parser.add_argument("--markdown-out")
+    args = parser.parse_args()
+
+    fixture_doc = load_json(args.fixtures)
+    if not fixture_doc:
+        print(f"failed to load fixtures: {args.fixtures}", file=sys.stderr)
+        return 2
+
+    results = [evaluate_fixture(f) for f in fixture_doc.get("fixtures", [])]
+    report = {
+        "schema_version": 1,
+        "fixtures": results,
+        "summary": {
+            "total": len(results),
+            "ncnn_pass": sum(1 for r in results if r["ncnn_pass"]),
+            "ncnn_fail": sum(1 for r in results if not r["ncnn_pass"]),
+            "pytorch_available": sum(1 for r in results if r["pytorch"] is not None),
+        },
+    }
+
+    md = markdown_report(results)
+    print(md)
+    print()
+    print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
+
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if args.markdown_out:
+        Path(args.markdown_out).write_text(md + "\n", encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
