@@ -9,6 +9,8 @@ It follows the validation split suggested from the FunASR / Qwen3-ASR side:
 4. Keep platform smoke/performance separate from PyTorch accuracy parity.
 5. Provide a minimal regression entry point.
 
+See `COMPLETION_STATUS.md` for the current completion table and remaining gaps.
+
 ## Local Fixtures
 
 `fixtures.local.json` currently covers three local macOS TTS fixtures:
@@ -25,18 +27,23 @@ in later on the Linux VM.
 
 ## ncnn Regression Entry
 
+Use `run_fixture.sh` so each run produces the same three artifacts:
+
+- final text;
+- structured result JSON;
+- mel summary JSON.
+
 Example:
 
 ```bash
-qwen3_asr_main \
+tests/qwen3_asr/run_fixture.sh \
+  --binary /Users/link/llk/build/ncnn_llm-macos-qwen3-asr/qwen3_asr_main \
   --model /Users/link/llk/models/qwen3_asr_0_6b_runtime_text128 \
-  --audio-wav /Users/link/llk/test_audio/chinese_fixtures/zh_short_16k.wav \
-  --generate-from-features \
-  --max-new-tokens 64 \
+  --audio /Users/link/llk/test_audio/chinese_fixtures/zh_short_16k.wav \
+  --out-dir /Users/link/llk/test_audio/chinese_fixtures \
+  --id zh_short_default_final \
   --threads 4 \
-  --text-out /Users/link/llk/test_audio/chinese_fixtures/zh_short_default_final.txt \
-  --json-out /Users/link/llk/test_audio/chinese_fixtures/zh_short_default_final.json \
-  --dump-mel-summary /Users/link/llk/test_audio/chinese_fixtures/zh_short_default_final_mel.json
+  --max-new-tokens 64
 ```
 
 ## Evaluation
