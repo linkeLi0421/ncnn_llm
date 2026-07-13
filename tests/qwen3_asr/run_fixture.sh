@@ -109,7 +109,20 @@ if [[ "$measure_memory" == "true" ]]; then
     echo "/usr/bin/time is required for --measure-memory" >&2
     exit 3
   fi
-  /usr/bin/time -l "${cmd[@]}" 2> "$out_dir/${id}_time.txt"
+  time_mode=""
+  case "$(uname -s)" in
+    Darwin)
+      time_mode="-l"
+      ;;
+    Linux)
+      time_mode="-v"
+      ;;
+    *)
+      echo "unsupported platform for --measure-memory: $(uname -s)" >&2
+      exit 3
+      ;;
+  esac
+  /usr/bin/time "$time_mode" "${cmd[@]}" 2> "$out_dir/${id}_time.txt"
   python3 - "$out_dir/${id}_time.txt" "$out_dir/${id}_metrics.json" <<'PY'
 import json
 import re
@@ -124,9 +137,15 @@ def find(pattern):
     m = re.search(pattern, text)
     return int(m.group(1)) if m else None
 
+max_rss_bytes = find(r"(\d+)\s+maximum resident set size")
+max_rss_kb = find(r"Maximum resident set size \(kbytes\):\s*(\d+)")
+if max_rss_bytes is None and max_rss_kb is not None:
+    max_rss_bytes = max_rss_kb * 1024
+
 metrics = {
     "time_log": str(time_log),
-    "max_resident_set_size_bytes": find(r"(\d+)\s+maximum resident set size"),
+    "max_resident_set_size_bytes": max_rss_bytes,
+    "max_resident_set_size_kbytes": max_rss_kb,
     "page_reclaims": find(r"(\d+)\s+page reclaims"),
     "page_faults": find(r"(\d+)\s+page faults"),
     "voluntary_context_switches": find(r"(\d+)\s+voluntary context switches"),
