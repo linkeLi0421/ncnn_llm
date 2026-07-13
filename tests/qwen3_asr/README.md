@@ -49,7 +49,7 @@ tests/qwen3_asr/run_fixture.sh \
   --audio /Users/link/llk/test_audio/chinese_fixtures/zh_short_16k.wav \
   --out-dir /Users/link/llk/test_audio/chinese_fixtures \
   --id zh_short_default_final \
-  --threads 4 \
+  --threads 6 \
   --max-new-tokens 64 \
   --measure-memory
 ```
@@ -100,13 +100,21 @@ tests/qwen3_asr/collect_platform_smoke.py \
   --model /Users/link/llk/models/qwen3_asr_0_6b_runtime_text128 \
   --eval-report /Users/link/llk/test_audio/chinese_fixtures/eval_report.json \
   --fixtures tests/qwen3_asr/fixtures.local.json \
-  --threads 4 \
+  --threads 6 \
   --json-out /Users/link/llk/test_audio/chinese_fixtures/platform_smoke.json \
   --markdown-out /Users/link/llk/test_audio/chinese_fixtures/platform_smoke.md
 ```
 
 This report is a CPU-only smoke/performance record. It should not be mixed with
 PyTorch accuracy parity.
+
+Current local macOS CPU-only smoke:
+
+| fixture | strict | semantic | chunks | RTF | peak RSS |
+| --- | --- | --- | ---: | ---: | ---: |
+| `zh_short_tts` | PASS | PASS | 2 | 10.71 | 3485.5 MiB |
+| `zh_long_tts` | FAIL | FAIL | 9 | 11.36 | 3463.8 MiB |
+| `zh_mixed_tts` | FAIL | PASS | 4 | 10.33 | 3448.0 MiB |
 
 ## VM Work Still Needed
 
