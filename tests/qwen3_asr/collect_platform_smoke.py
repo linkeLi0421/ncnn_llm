@@ -41,11 +41,31 @@ def file_info(path: str | None) -> dict[str, Any] | None:
     }
 
 
-def fixture_perf(eval_report: Any | None) -> list[dict[str, Any]]:
+def metrics_for_fixture(fixture: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(fixture, dict):
+        return None
+    result_path = fixture.get("ncnn_result_json")
+    if not result_path:
+        return None
+    p = Path(result_path)
+    metrics_path = p.with_name(p.stem + "_metrics.json")
+    metrics = load_json(str(metrics_path))
+    if isinstance(metrics, dict):
+        return metrics
+    return None
+
+
+def fixture_perf(eval_report: Any | None, fixture_doc: Any | None) -> list[dict[str, Any]]:
     if not isinstance(eval_report, dict):
         return []
+    fixture_by_id = {}
+    if isinstance(fixture_doc, dict):
+        for fixture in fixture_doc.get("fixtures", []):
+            if isinstance(fixture, dict):
+                fixture_by_id[fixture.get("id")] = fixture
     out = []
     for fixture in eval_report.get("fixtures", []):
+        metrics = metrics_for_fixture(fixture_by_id.get(fixture.get("id")))
         out.append({
             "id": fixture.get("id"),
             "category": fixture.get("category"),
@@ -53,6 +73,7 @@ def fixture_perf(eval_report: Any | None) -> list[dict[str, Any]]:
             "ncnn_semantic_pass": fixture.get("ncnn_semantic_pass"),
             "chunks": fixture.get("ncnn_chunks"),
             "rtf": fixture.get("ncnn_rtf"),
+            "max_resident_set_size_bytes": metrics.get("max_resident_set_size_bytes") if metrics else None,
             "chunking_strategy": fixture.get("chunking_strategy"),
             "module_summary": fixture.get("modules"),
         })
@@ -64,12 +85,14 @@ def main() -> int:
     parser.add_argument("--binary")
     parser.add_argument("--model")
     parser.add_argument("--eval-report")
+    parser.add_argument("--fixtures")
     parser.add_argument("--threads", type=int)
     parser.add_argument("--json-out", required=True)
     parser.add_argument("--markdown-out")
     args = parser.parse_args()
 
     eval_report = load_json(args.eval_report)
+    fixture_doc = load_json(args.fixtures)
     report = {
         "schema_version": 1,
         "platform": {
@@ -93,8 +116,9 @@ def main() -> int:
         },
         "evaluation": {
             "eval_report": args.eval_report,
+            "fixtures_doc": args.fixtures,
             "summary": eval_report.get("summary") if isinstance(eval_report, dict) else None,
-            "fixtures": fixture_perf(eval_report),
+            "fixtures": fixture_perf(eval_report, fixture_doc),
         },
     }
 
@@ -111,16 +135,18 @@ def main() -> int:
             f"- Binary: `{args.binary}`",
             f"- Model: `{args.model}`",
             "",
-            "| fixture | strict | semantic | chunks | RTF | chunking |",
-            "| --- | --- | --- | ---: | ---: | --- |",
+            "| fixture | strict | semantic | chunks | RTF | peak RSS | chunking |",
+            "| --- | --- | --- | ---: | ---: | ---: | --- |",
         ]
         for f in report["evaluation"]["fixtures"]:
             rtf = f.get("rtf")
             rtf_text = f"{rtf:.2f}" if isinstance(rtf, (int, float)) else ""
+            rss = f.get("max_resident_set_size_bytes")
+            rss_text = f"{rss / 1024 / 1024:.1f} MiB" if isinstance(rss, int) else ""
             lines.append(
                 f"| `{f.get('id')}` | {'PASS' if f.get('ncnn_pass') else 'FAIL'} | "
                 f"{'PASS' if f.get('ncnn_semantic_pass') else 'FAIL'} | "
-                f"{f.get('chunks') or ''} | {rtf_text} | {f.get('chunking_strategy') or ''} |"
+                f"{f.get('chunks') or ''} | {rtf_text} | {rss_text} | {f.get('chunking_strategy') or ''} |"
             )
         Path(args.markdown_out).write_text("\n".join(lines) + "\n", encoding="utf-8")
 

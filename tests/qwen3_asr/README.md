@@ -50,7 +50,8 @@ tests/qwen3_asr/run_fixture.sh \
   --out-dir /Users/link/llk/test_audio/chinese_fixtures \
   --id zh_short_default_final \
   --threads 4 \
-  --max-new-tokens 64
+  --max-new-tokens 64 \
+  --measure-memory
 ```
 
 ## Evaluation
@@ -98,6 +99,7 @@ tests/qwen3_asr/collect_platform_smoke.py \
   --binary /Users/link/llk/build/ncnn_llm-macos-qwen3-asr/qwen3_asr_main \
   --model /Users/link/llk/models/qwen3_asr_0_6b_runtime_text128 \
   --eval-report /Users/link/llk/test_audio/chinese_fixtures/eval_report.json \
+  --fixtures tests/qwen3_asr/fixtures.local.json \
   --threads 4 \
   --json-out /Users/link/llk/test_audio/chinese_fixtures/platform_smoke.json \
   --markdown-out /Users/link/llk/test_audio/chinese_fixtures/platform_smoke.md

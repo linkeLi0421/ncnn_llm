@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  run_fixture.sh --binary BIN --model DIR --audio WAV --out-dir DIR [--id NAME] [--threads N] [--max-new-tokens N] [--energy-chunking]
+  run_fixture.sh --binary BIN --model DIR --audio WAV --out-dir DIR [--id NAME] [--threads N] [--max-new-tokens N] [--energy-chunking] [--measure-memory]
 
 Example:
   tests/qwen3_asr/run_fixture.sh \
@@ -24,6 +24,7 @@ id=""
 threads="4"
 max_new_tokens="64"
 energy_chunking="false"
+measure_memory="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -57,6 +58,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --energy-chunking)
       energy_chunking="true"
+      shift
+      ;;
+    --measure-memory)
+      measure_memory="true"
       shift
       ;;
     --help|-h)
@@ -99,11 +104,50 @@ if [[ "$energy_chunking" == "true" ]]; then
   cmd+=(--energy-chunking)
 fi
 
-"${cmd[@]}"
+if [[ "$measure_memory" == "true" ]]; then
+  if [[ ! -x /usr/bin/time ]]; then
+    echo "/usr/bin/time is required for --measure-memory" >&2
+    exit 3
+  fi
+  /usr/bin/time -l "${cmd[@]}" 2> "$out_dir/${id}_time.txt"
+  python3 - "$out_dir/${id}_time.txt" "$out_dir/${id}_metrics.json" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+time_log = Path(sys.argv[1])
+metrics_path = Path(sys.argv[2])
+text = time_log.read_text(encoding="utf-8", errors="replace")
+
+def find(pattern):
+    m = re.search(pattern, text)
+    return int(m.group(1)) if m else None
+
+metrics = {
+    "time_log": str(time_log),
+    "max_resident_set_size_bytes": find(r"(\d+)\s+maximum resident set size"),
+    "page_reclaims": find(r"(\d+)\s+page reclaims"),
+    "page_faults": find(r"(\d+)\s+page faults"),
+    "voluntary_context_switches": find(r"(\d+)\s+voluntary context switches"),
+    "involuntary_context_switches": find(r"(\d+)\s+involuntary context switches"),
+}
+metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+PY
+else
+  "${cmd[@]}"
+fi
 
 python3 -m json.tool "$out_dir/${id}.json" >/dev/null
 python3 -m json.tool "$out_dir/${id}_mel.json" >/dev/null
+if [[ "$measure_memory" == "true" ]]; then
+  python3 -m json.tool "$out_dir/${id}_metrics.json" >/dev/null
+fi
 
 echo "text_out=$out_dir/${id}.txt"
 echo "json_out=$out_dir/${id}.json"
 echo "mel_summary=$out_dir/${id}_mel.json"
+if [[ "$measure_memory" == "true" ]]; then
+  echo "time_log=$out_dir/${id}_time.txt"
+  echo "metrics=$out_dir/${id}_metrics.json"
+fi
