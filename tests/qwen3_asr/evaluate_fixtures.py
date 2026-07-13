@@ -240,8 +240,8 @@ def evaluate_fixture(fixture: dict[str, Any]) -> dict[str, Any]:
 
 def markdown_report(results: list[dict[str, Any]]) -> str:
     lines = [
-        "| fixture | category | strict | semantic | chunks | RTF | normalized expected | normalized ncnn | notes |",
-        "| --- | --- | --- | --- | ---: | ---: | --- | --- | --- |",
+        "| fixture | category | ncnn strict | ncnn semantic | PyTorch strict | PyTorch semantic | chunks | RTF | normalized expected | normalized ncnn | normalized PyTorch | notes |",
+        "| --- | --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- | --- |",
     ]
     for r in results:
         rtf = r["ncnn_rtf"]
@@ -249,20 +249,33 @@ def markdown_report(results: list[dict[str, Any]]) -> str:
         notes = []
         if r["mel"]["status"] == "missing_pytorch":
             notes.append("PyTorch mel 待补")
+        elif r["mel"]["status"] == "ok":
+            notes.append("mel summary present")
+        elif r["mel"]["status"] == "mismatch":
+            notes.append("mel summary shape/metadata mismatch")
         if r["chunking_strategy"]:
             notes.append(str(r["chunking_strategy"]))
         if not r["ncnn_pass"] and r["ncnn_semantic_pass"]:
             notes.append("semantic pass; strict postprocess/output contract still differs")
+        pytorch = r["pytorch"] or {"normalized": ""}
+        pytorch_strict = "N/A" if r["pytorch_pass"] is None else ("PASS" if r["pytorch_pass"] else "FAIL")
+        pytorch_semantic = (
+            "N/A" if r["pytorch_semantic_pass"] is None
+            else ("PASS" if r["pytorch_semantic_pass"] else "FAIL")
+        )
         lines.append(
-            "| `{id}` | {category} | {strict} | {semantic} | {chunks} | {rtf} | `{expected}` | `{ncnn}` | {notes} |".format(
+            "| `{id}` | {category} | {ncnn_strict} | {ncnn_semantic} | {pytorch_strict} | {pytorch_semantic} | {chunks} | {rtf} | `{expected}` | `{ncnn}` | `{pytorch}` | {notes} |".format(
                 id=r["id"],
                 category=r["category"],
-                strict="PASS" if r["ncnn_pass"] else "FAIL",
-                semantic="PASS" if r["ncnn_semantic_pass"] else "FAIL",
+                ncnn_strict="PASS" if r["ncnn_pass"] else "FAIL",
+                ncnn_semantic="PASS" if r["ncnn_semantic_pass"] else "FAIL",
+                pytorch_strict=pytorch_strict,
+                pytorch_semantic=pytorch_semantic,
                 chunks=r["ncnn_chunks"],
                 rtf=rtf_text,
                 expected=short(r["expected"]["normalized"]),
                 ncnn=short(r["ncnn"]["normalized"]),
+                pytorch=short(pytorch["normalized"]),
                 notes=", ".join(notes),
             )
         )
