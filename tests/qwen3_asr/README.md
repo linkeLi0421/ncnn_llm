@@ -67,12 +67,15 @@ The script compares:
 - raw text;
 - cleaned text;
 - normalized text;
+- semantic-normalized text for documented abbreviation variants;
 - ncnn mel summary presence and preprocessing fields;
 - optional PyTorch mel summary when available;
 - optional module-level summary when available.
 
-Current pass/fail is based on normalized text only. Raw and cleaned text are kept
-in the JSON report so postprocess problems are not confused with model parity.
+Strict pass/fail is based on normalized text. Semantic pass/fail is reported
+separately and is intentionally limited to documented abbreviation variants such
+as `Open I A P P.I` versus `OpenAI API`. Raw and cleaned text are kept in the
+JSON report so postprocess problems are not confused with model parity.
 
 The ncnn result JSON also carries module-localization summaries for each chunk:
 

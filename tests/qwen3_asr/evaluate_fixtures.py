@@ -12,7 +12,6 @@ import argparse
 import json
 import math
 import re
-import statistics
 import sys
 import unicodedata
 from pathlib import Path
@@ -60,15 +59,33 @@ def normalized_text(text: str) -> str:
     return text
 
 
+def semantic_normalized_text(text: str) -> str:
+    text = normalized_text(text)
+    # Keep this list intentionally small and explicit. It documents common ASR
+    # spellings for English abbreviations in mixed Chinese/English speech, but
+    # strict normalized_text still remains the output-contract gate.
+    replacements = {
+        "openiappi": "openaiapi",
+        "openiap": "openaiapi",
+        "openiaip": "openaiapi",
+        "openaiappi": "openaiapi",
+        "apiapi": "api",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return text
+
+
 def result_texts(result: dict[str, Any] | None) -> dict[str, str]:
     if not result:
-        return {"raw": "", "clean": "", "normalized": ""}
+        return {"raw": "", "clean": "", "normalized": "", "semantic_normalized": ""}
     raw = str(result.get("raw_text") or result.get("text") or "")
     text = str(result.get("text") or raw)
     return {
         "raw": raw,
         "clean": clean_text(text),
         "normalized": normalized_text(text),
+        "semantic_normalized": semantic_normalized_text(text),
     }
 
 
@@ -77,6 +94,7 @@ def expected_texts(text: str) -> dict[str, str]:
         "raw": text,
         "clean": clean_text(text),
         "normalized": normalized_text(text),
+        "semantic_normalized": semantic_normalized_text(text),
     }
 
 
@@ -188,9 +206,18 @@ def evaluate_fixture(fixture: dict[str, Any]) -> dict[str, Any]:
     pytorch = result_texts(pytorch_result)
 
     ncnn_pass = bool(ncnn["normalized"]) and ncnn["normalized"] == expected["normalized"]
+    ncnn_semantic_pass = (
+        bool(ncnn["semantic_normalized"]) and
+        ncnn["semantic_normalized"] == expected["semantic_normalized"]
+    )
     pytorch_pass = None
+    pytorch_semantic_pass = None
     if pytorch_result is not None:
         pytorch_pass = bool(pytorch["normalized"]) and pytorch["normalized"] == expected["normalized"]
+        pytorch_semantic_pass = (
+            bool(pytorch["semantic_normalized"]) and
+            pytorch["semantic_normalized"] == expected["semantic_normalized"]
+        )
 
     return {
         "id": fixture["id"],
@@ -200,7 +227,9 @@ def evaluate_fixture(fixture: dict[str, Any]) -> dict[str, Any]:
         "ncnn": ncnn,
         "pytorch": pytorch if pytorch_result is not None else None,
         "ncnn_pass": ncnn_pass,
+        "ncnn_semantic_pass": ncnn_semantic_pass,
         "pytorch_pass": pytorch_pass,
+        "pytorch_semantic_pass": pytorch_semantic_pass,
         "ncnn_chunks": chunk_summary(ncnn_result),
         "ncnn_rtf": ncnn_result.get("rtf") if isinstance(ncnn_result, dict) else None,
         "chunking_strategy": ncnn_result.get("chunking_strategy") if isinstance(ncnn_result, dict) else None,
@@ -211,8 +240,8 @@ def evaluate_fixture(fixture: dict[str, Any]) -> dict[str, Any]:
 
 def markdown_report(results: list[dict[str, Any]]) -> str:
     lines = [
-        "| fixture | category | ncnn pass | chunks | RTF | normalized expected | normalized ncnn | notes |",
-        "| --- | --- | --- | ---: | ---: | --- | --- | --- |",
+        "| fixture | category | strict | semantic | chunks | RTF | normalized expected | normalized ncnn | notes |",
+        "| --- | --- | --- | --- | ---: | ---: | --- | --- | --- |",
     ]
     for r in results:
         rtf = r["ncnn_rtf"]
@@ -222,11 +251,14 @@ def markdown_report(results: list[dict[str, Any]]) -> str:
             notes.append("PyTorch mel 待补")
         if r["chunking_strategy"]:
             notes.append(str(r["chunking_strategy"]))
+        if not r["ncnn_pass"] and r["ncnn_semantic_pass"]:
+            notes.append("semantic pass; strict postprocess/output contract still differs")
         lines.append(
-            "| `{id}` | {category} | {passed} | {chunks} | {rtf} | `{expected}` | `{ncnn}` | {notes} |".format(
+            "| `{id}` | {category} | {strict} | {semantic} | {chunks} | {rtf} | `{expected}` | `{ncnn}` | {notes} |".format(
                 id=r["id"],
                 category=r["category"],
-                passed="PASS" if r["ncnn_pass"] else "FAIL",
+                strict="PASS" if r["ncnn_pass"] else "FAIL",
+                semantic="PASS" if r["ncnn_semantic_pass"] else "FAIL",
                 chunks=r["ncnn_chunks"],
                 rtf=rtf_text,
                 expected=short(r["expected"]["normalized"]),
@@ -257,6 +289,8 @@ def main() -> int:
             "total": len(results),
             "ncnn_pass": sum(1 for r in results if r["ncnn_pass"]),
             "ncnn_fail": sum(1 for r in results if not r["ncnn_pass"]),
+            "ncnn_semantic_pass": sum(1 for r in results if r["ncnn_semantic_pass"]),
+            "ncnn_semantic_fail": sum(1 for r in results if not r["ncnn_semantic_pass"]),
             "pytorch_available": sum(1 for r in results if r["pytorch"] is not None),
         },
     }

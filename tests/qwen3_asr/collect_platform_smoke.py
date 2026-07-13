@@ -50,6 +50,7 @@ def fixture_perf(eval_report: Any | None) -> list[dict[str, Any]]:
             "id": fixture.get("id"),
             "category": fixture.get("category"),
             "ncnn_pass": fixture.get("ncnn_pass"),
+            "ncnn_semantic_pass": fixture.get("ncnn_semantic_pass"),
             "chunks": fixture.get("ncnn_chunks"),
             "rtf": fixture.get("ncnn_rtf"),
             "chunking_strategy": fixture.get("chunking_strategy"),
@@ -110,14 +111,15 @@ def main() -> int:
             f"- Binary: `{args.binary}`",
             f"- Model: `{args.model}`",
             "",
-            "| fixture | pass | chunks | RTF | chunking |",
-            "| --- | --- | ---: | ---: | --- |",
+            "| fixture | strict | semantic | chunks | RTF | chunking |",
+            "| --- | --- | --- | ---: | ---: | --- |",
         ]
         for f in report["evaluation"]["fixtures"]:
             rtf = f.get("rtf")
             rtf_text = f"{rtf:.2f}" if isinstance(rtf, (int, float)) else ""
             lines.append(
                 f"| `{f.get('id')}` | {'PASS' if f.get('ncnn_pass') else 'FAIL'} | "
+                f"{'PASS' if f.get('ncnn_semantic_pass') else 'FAIL'} | "
                 f"{f.get('chunks') or ''} | {rtf_text} | {f.get('chunking_strategy') or ''} |"
             )
         Path(args.markdown_out).write_text("\n".join(lines) + "\n", encoding="utf-8")
