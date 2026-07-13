@@ -732,6 +732,9 @@ static Qwen3ASRResult decode_audio(ncnn_qwen3_asr& asr,
     }
 
     Qwen3ASRResult result = asr.parse_output(generated);
+    if (result.language.empty() && !args.language.empty()) {
+        result.language = args.language;
+    }
     std::cout << prefix << "generated_raw=" << result.raw_text << "\n";
     std::cout << prefix << "language=" << result.language << "\n";
     std::cout << prefix << "text=" << result.text << "\n";

@@ -97,6 +97,7 @@ private:
     int audio_start_token_id_ = -1;
     int user_token_id_ = -1;
     int audio_end_token_id_ = -1;
+    int asr_text_token_id_ = 151704;
     int text_seq_len_ = 8;
     int kv_cache_len_ = 0;
     int num_hidden_layers_ = 0;

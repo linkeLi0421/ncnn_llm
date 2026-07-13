@@ -150,6 +150,9 @@ def module_status(result: dict[str, Any] | None, module_summary: Any | None) -> 
         "projector_or_adaptor_summary": "missing",
         "first_decoder_logits_summary": "missing",
         "module_summary_file": module_summary is not None,
+        "pytorch_speech_encoder_summary": "missing",
+        "pytorch_projector_or_adaptor_summary": "missing",
+        "pytorch_first_decoder_logits_summary": "missing",
     }
     if isinstance(result, dict):
         chunks = result.get("chunks", [])
@@ -173,6 +176,16 @@ def module_status(result: dict[str, Any] | None, module_summary: Any | None) -> 
         if "lm_head" in result:
             out["first_decoder_logits_summary"] = "ncnn_lm_head_smoke_present"
     if isinstance(module_summary, dict):
+        chunks = module_summary.get("chunks", [])
+        first_chunk = chunks[0] if isinstance(chunks, list) and chunks and isinstance(chunks[0], dict) else {}
+        if "audio_embedding" in first_chunk:
+            out["pytorch_speech_encoder_summary"] = "present"
+        first_step = first_chunk.get("first_step")
+        if isinstance(first_step, dict) and first_step.get("available"):
+            if "merged_embeds" in first_step:
+                out["pytorch_projector_or_adaptor_summary"] = "present"
+            if "selected_logits" in first_step:
+                out["pytorch_first_decoder_logits_summary"] = "present"
         for key in ("speech_encoder_summary", "projector_or_adaptor_summary", "first_decoder_logits_summary"):
             if key in module_summary:
                 out[key] = "present"
@@ -257,6 +270,9 @@ def markdown_report(results: list[dict[str, Any]]) -> str:
             notes.append(str(r["chunking_strategy"]))
         if not r["ncnn_pass"] and r["ncnn_semantic_pass"]:
             notes.append("semantic pass; strict postprocess/output contract still differs")
+        modules = r["modules"]
+        if modules.get("pytorch_first_decoder_logits_summary") == "present":
+            notes.append("PyTorch module summary present")
         pytorch = r["pytorch"] or {"normalized": ""}
         pytorch_strict = "N/A" if r["pytorch_pass"] is None else ("PASS" if r["pytorch_pass"] else "FAIL")
         pytorch_semantic = (

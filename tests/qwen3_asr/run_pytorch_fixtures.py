@@ -164,6 +164,122 @@ def transcription_to_dict(value: Any) -> dict[str, Any]:
     }
 
 
+def torch_tensor_summary(tensor: Any, first_value_count: int = 12) -> dict[str, Any]:
+    import torch
+
+    with torch.no_grad():
+        values = tensor.detach().float().cpu().contiguous()
+    arr = values.numpy()
+    summary = tensor_summary(arr, first_value_count=first_value_count)
+    shape = summary["shape"]
+    summary.update({
+        "torch_dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "c": 1,
+        "d": 1,
+        "elemsize": 4,
+        "elempack": 1,
+    })
+    if len(shape) == 1:
+        summary["w"] = int(shape[0])
+        summary["h"] = 1
+    elif len(shape) >= 2:
+        summary["w"] = int(shape[-1])
+        summary["h"] = int(shape[-2])
+    else:
+        summary["w"] = int(summary["total"])
+        summary["h"] = 1
+    return summary
+
+
+def move_processor_inputs(inputs: Any, device: Any, dtype: Any) -> Any:
+    moved = inputs.to(device)
+    for key, value in list(moved.items()):
+        if hasattr(value, "is_floating_point") and value.is_floating_point():
+            moved[key] = value.to(dtype=dtype)
+    return moved
+
+
+def pytorch_module_summaries(
+    model: Any,
+    audio: np.ndarray,
+    chunks: list[tuple[int, int]],
+    language: str,
+    max_chunks: int,
+) -> dict[str, Any]:
+    import torch
+
+    if max_chunks <= 0:
+        return {"schema_version": 1, "runtime": "pytorch_qwen_asr_modules", "chunks": []}
+
+    thinker = model.model.thinker
+    device = model.model.device
+    dtype = model.model.dtype
+    prompt = model._build_text_prompt(context="", force_language=language)
+    out_chunks = []
+
+    for chunk_index, (start_sample, end_sample) in enumerate(chunks[:max_chunks]):
+        chunk = audio[start_sample:end_sample]
+        inputs = model.processor(text=[prompt], audio=[chunk], return_tensors="pt", padding=True)
+        inputs = move_processor_inputs(inputs, device, dtype)
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs.get("attention_mask")
+        prompt_len = int(attention_mask[0].sum().item()) if attention_mask is not None else int(input_ids.shape[1])
+
+        with torch.no_grad():
+            text_embeds = thinker.get_input_embeddings()(input_ids)
+            audio_features = thinker.get_audio_features(
+                inputs["input_features"],
+                feature_attention_mask=inputs.get("feature_attention_mask"),
+                audio_feature_lengths=inputs.get("audio_feature_lengths"),
+            )
+            audio_features = audio_features.to(text_embeds.device, text_embeds.dtype)
+            audio_mask = thinker.get_placeholder_mask(input_ids, inputs_embeds=text_embeds)
+            merged_embeds = text_embeds.masked_scatter(audio_mask, audio_features)
+            outputs = thinker(
+                **inputs,
+                use_cache=False,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            logits = outputs.logits[0]
+            hidden = outputs.hidden_states[-1][0] if outputs.hidden_states is not None else None
+            selected_logits = logits[prompt_len - 1]
+            next_token = int(torch.argmax(selected_logits).item())
+
+        first_step = {
+            "available": True,
+            "prompt_len": prompt_len,
+            "audio_tokens": int((input_ids == thinker.config.audio_token_id).sum().item()),
+            "text_embeds": torch_tensor_summary(text_embeds[0], first_value_count=0),
+            "merged_embeds": torch_tensor_summary(merged_embeds[0], first_value_count=0),
+            "logits": torch_tensor_summary(logits, first_value_count=0),
+            "selected_logits": torch_tensor_summary(selected_logits, first_value_count=12),
+            "next_token": next_token,
+        }
+        if hidden is not None:
+            first_step["hidden"] = torch_tensor_summary(hidden, first_value_count=0)
+
+        out_chunks.append({
+            "index": chunk_index,
+            "start_sample": int(start_sample),
+            "end_sample": int(end_sample),
+            "input_ids_shape": list(input_ids.shape),
+            "input_features_shape": list(inputs["input_features"].shape),
+            "feature_attention_mask_shape": list(inputs["feature_attention_mask"].shape)
+            if "feature_attention_mask" in inputs else None,
+            "audio_embedding": torch_tensor_summary(audio_features, first_value_count=0),
+            "first_step": first_step,
+        })
+
+    return {
+        "schema_version": 1,
+        "runtime": "pytorch_qwen_asr_modules",
+        "prompt": prompt,
+        "chunks": out_chunks,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixtures", default="tests/qwen3_asr/fixtures.local.json")
@@ -179,6 +295,12 @@ def main() -> int:
     parser.add_argument("--n-fft", type=int, default=400)
     parser.add_argument("--mel-bins", type=int, default=128)
     parser.add_argument("--chunk-overlap-frames", type=int, default=32)
+    parser.add_argument(
+        "--module-summary-chunks",
+        type=int,
+        default=1,
+        help="Number of fixed chunks to run through PyTorch module summary generation; use 0 to disable.",
+    )
     args = parser.parse_args()
 
     from qwen_asr import Qwen3ASRModel
@@ -258,16 +380,27 @@ def main() -> int:
 
         result_path = out_dir / f"{fixture_id}_pytorch.json"
         mel_path = out_dir / f"{fixture_id}_pytorch_mel.json"
+        module_path = out_dir / f"{fixture_id}_pytorch_modules.json"
+        modules = pytorch_module_summaries(
+            model,
+            audio,
+            chunks,
+            args.language,
+            args.module_summary_chunks,
+        )
         write_json(result_path, result)
         write_json(mel_path, mel)
+        write_json(module_path, modules)
         fixture["audio"] = audio_path
         fixture["pytorch_result_json"] = str(result_path)
         fixture["pytorch_mel_summary_json"] = str(mel_path)
+        fixture["module_summary_json"] = str(module_path)
         results.append({
             "id": fixture_id,
             "text": result["text"],
             "rtf": result["rtf"],
             "mel_shape_first": [mel[0].get("h"), mel[0].get("w")] if mel else None,
+            "module_summary_chunks": len(modules.get("chunks", [])),
             "chunks": len(chunks),
         })
 

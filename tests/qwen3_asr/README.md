@@ -87,8 +87,17 @@ The ncnn result JSON also carries module-localization summaries for each chunk:
 - `first_step.logits`;
 - `first_step.selected_logits`.
 
-These are ncnn-side summaries only. PyTorch-side summaries still need the Linux
-baseline environment.
+`run_pytorch_fixtures.py` can now generate matching PyTorch-side summaries for
+the first fixed chunk by default:
+
+- speech encoder / audio embedding output;
+- merged text/audio embedding;
+- first decoder hidden/logits;
+- selected first-step logits and greedy next token.
+
+These summaries intentionally use the same fixed overlap chunks as the ncnn
+runner, not the full-audio feature tensor used by the end-to-end PyTorch
+transcribe call.
 
 ## PyTorch Baseline
 
@@ -104,7 +113,8 @@ tests/qwen3_asr/run_pytorch_fixtures.py \
   --path-rewrite /Users/link/llk/test_audio/chinese_fixtures=/data/test_audio/chinese_fixtures \
   --device-map cuda \
   --language Chinese \
-  --max-new-tokens 128
+  --max-new-tokens 128 \
+  --module-summary-chunks 1
 ```
 
 The script writes:
@@ -112,6 +122,7 @@ The script writes:
 - `*_pytorch.json` for original `Qwen3ASRModel.transcribe()` text output;
 - `*_pytorch_mel.json` for official feature-extractor summaries on the same
   fixed overlap chunks used by the ncnn runner;
+- `*_pytorch_modules.json` for PyTorch module-level summaries on fixed chunks;
 - an updated fixture JSON that can be passed to `evaluate_fixtures.py`.
 
 ## Platform Smoke
@@ -142,14 +153,12 @@ Current local macOS CPU-only smoke:
 
 ## VM Work Still Needed
 
-The following fields require the Linux/PyTorch environment:
+The Linux/PyTorch environment can now fill:
 
-- PyTorch result JSON for each fixture.
-- PyTorch mel summary JSON for each fixture.
-- Module-level parity summaries:
-  - speech encoder output;
-  - projector/adaptor output if separable;
-  - first decoder logits.
+- PyTorch result JSON for each fixture;
+- PyTorch mel summary JSON for each fixture;
+- PyTorch module-level summaries for speech encoder output, merged embedding,
+  hidden state, first decoder logits, and selected logits.
 
 Suggested numeric comparisons for module-level parity:
 

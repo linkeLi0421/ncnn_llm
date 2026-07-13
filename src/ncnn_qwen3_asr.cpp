@@ -157,6 +157,17 @@ bool ncnn_qwen3_asr::load_model_file(const std::string& model_path) {
             }
         }
 
+        {
+            std::ifstream ifs(model_path + "/processor/added_tokens.json");
+            if (ifs) {
+                json added_tokens;
+                ifs >> added_tokens;
+                if (added_tokens.contains("<asr_text>")) {
+                    asr_text_token_id_ = added_tokens["<asr_text>"].get<int>();
+                }
+            }
+        }
+
         printf("  hidden_size=%d vocab_size=%d text_seq_len=%d kv_cache_len=%d layers=%d rope_head_dim=%d rope_theta=%g\n",
                hidden_size_, vocab_size_, text_seq_len_, kv_cache_len_, num_hidden_layers_, rope_head_dim_, rope_theta_);
         printf("  audio_token_id=%d audio_start_token_id=%d audio_end_token_id=%d user_token_id=%d\n",
@@ -459,7 +470,6 @@ Qwen3ASRResult ncnn_qwen3_asr::parse_output(const std::vector<int>& generated_id
 std::vector<int> ncnn_qwen3_asr::build_prompt_ids(int audio_token_count,
                                                   const std::string& context,
                                                   const std::string& language) const {
-    (void)language;
     if (audio_token_count <= 0) {
         return {};
     }
@@ -490,6 +500,12 @@ std::vector<int> ncnn_qwen3_asr::build_prompt_ids(int audio_token_count,
     ids.push_back(im_start);
     ids.push_back(assistant);
     ids.push_back(newline);
+    if (!language.empty() && tokenizer_) {
+        std::vector<int> language_ids = tokenizer_->encode("language " + language,
+                                                           false, false, false, false);
+        ids.insert(ids.end(), language_ids.begin(), language_ids.end());
+        ids.push_back(asr_text_token_id_);
+    }
     return ids;
 }
 
