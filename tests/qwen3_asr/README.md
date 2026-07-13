@@ -90,6 +90,30 @@ The ncnn result JSON also carries module-localization summaries for each chunk:
 These are ncnn-side summaries only. PyTorch-side summaries still need the Linux
 baseline environment.
 
+## PyTorch Baseline
+
+On the Linux/PyTorch environment, run the original Qwen3-ASR path and fill the
+nullable PyTorch fields in a generated fixture file:
+
+```bash
+tests/qwen3_asr/run_pytorch_fixtures.py \
+  --model /data/models/Qwen3-ASR-0.6B \
+  --fixtures tests/qwen3_asr/fixtures.local.json \
+  --out-dir /data/results/qwen3_asr/pytorch \
+  --updated-fixtures /data/results/qwen3_asr/fixtures.vm.json \
+  --path-rewrite /Users/link/llk/test_audio/chinese_fixtures=/data/test_audio/chinese_fixtures \
+  --device-map cuda \
+  --language Chinese \
+  --max-new-tokens 128
+```
+
+The script writes:
+
+- `*_pytorch.json` for original `Qwen3ASRModel.transcribe()` text output;
+- `*_pytorch_mel.json` for official feature-extractor summaries on the same
+  fixed overlap chunks used by the ncnn runner;
+- an updated fixture JSON that can be passed to `evaluate_fixtures.py`.
+
 ## Platform Smoke
 
 After generating `eval_report.json`, collect a local platform smoke report:
