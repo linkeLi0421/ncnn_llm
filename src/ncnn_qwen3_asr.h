@@ -25,6 +25,16 @@ struct Qwen3ASRKVDecodeState {
     bool ready = false;
 };
 
+struct Qwen3ASRFirstStepDebug {
+    ncnn::Mat text_embeds;
+    ncnn::Mat merged_embeds;
+    ncnn::Mat hidden;
+    ncnn::Mat logits;
+    ncnn::Mat selected_logits;
+    int prompt_len = 0;
+    int next_token = -1;
+};
+
 class ncnn_qwen3_asr : public ncnn_llm_base {
 public:
     ncnn_qwen3_asr(const std::string& model_path, bool use_vulkan = false, int num_threads = 0);
@@ -58,6 +68,8 @@ public:
     ncnn::Mat merge_audio_embeddings(const ncnn::Mat& text_embeds,
                                      const std::vector<int>& input_ids,
                                      const ncnn::Mat& audio_embeds) const;
+    Qwen3ASRFirstStepDebug debug_first_step(const std::vector<int>& input_ids,
+                                            const ncnn::Mat& audio_embeds) const;
     int decode_next_token(const std::vector<int>& input_ids, const ncnn::Mat& audio_embeds) const;
     int prefill_kv(const std::vector<int>& input_ids,
                    const ncnn::Mat& audio_embeds,

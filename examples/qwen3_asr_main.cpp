@@ -615,6 +615,22 @@ static json mel_summary_json(const ncnn::Mat& mel,
     return out;
 }
 
+static json first_step_debug_json(const Qwen3ASRFirstStepDebug& debug) {
+    if (debug.prompt_len <= 0 || debug.selected_logits.total() == 0) {
+        return {{"available", false}};
+    }
+    return {
+        {"available", true},
+        {"prompt_len", debug.prompt_len},
+        {"next_token", debug.next_token},
+        {"text_embeds", mat_summary_json(debug.text_embeds, 0)},
+        {"merged_embeds", mat_summary_json(debug.merged_embeds, 0)},
+        {"hidden", mat_summary_json(debug.hidden, 0)},
+        {"logits", mat_summary_json(debug.logits, 0)},
+        {"selected_logits", mat_summary_json(debug.selected_logits, 12)}
+    };
+}
+
 static void print_mat_shape(const char* name, const ncnn::Mat& mat) {
     std::cout << name << ": dims=" << mat.dims
               << " w=" << mat.w
@@ -861,6 +877,8 @@ int main(int argc, char** argv) {
                     std::cout << prefix << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
                 }
                 print_mat_shape((prefix + "audio_encoder").c_str(), audio);
+                std::vector<int> debug_prompt_ids = asr.build_prompt_ids(audio.h, args.context, args.language);
+                Qwen3ASRFirstStepDebug first_step_debug = asr.debug_first_step(debug_prompt_ids, audio);
                 Qwen3ASRResult result = decode_audio(asr, audio, args, prefix);
                 run_report["chunks"].push_back({
                     {"index", chunk_index},
@@ -869,7 +887,8 @@ int main(int argc, char** argv) {
                     {"language", result.language},
                     {"raw_text", result.raw_text},
                     {"text", result.text},
-                    {"audio_embedding", mat_summary_json(audio, 0)}
+                    {"audio_embedding", mat_summary_json(audio, 0)},
+                    {"first_step", first_step_debug_json(first_step_debug)}
                 });
                 if (!result.text.empty()) {
                     chunk_texts.push_back(result.text);
@@ -926,6 +945,8 @@ int main(int argc, char** argv) {
         }
         print_mat_shape("audio_encoder", audio);
         run_report["audio_embedding"] = mat_summary_json(audio, 0);
+        std::vector<int> debug_prompt_ids = asr.build_prompt_ids(audio.h, args.context, args.language);
+        run_report["first_step"] = first_step_debug_json(asr.debug_first_step(debug_prompt_ids, audio));
     }
 
     if (!args.audio_features_raw.empty()) {
@@ -957,6 +978,8 @@ int main(int argc, char** argv) {
         }
         print_mat_shape("audio_encoder", audio);
         run_report["audio_embedding"] = mat_summary_json(audio, 0);
+        std::vector<int> debug_prompt_ids = asr.build_prompt_ids(audio.h, args.context, args.language);
+        run_report["first_step"] = first_step_debug_json(asr.debug_first_step(debug_prompt_ids, audio));
     }
 
     if (args.generate_from_features) {

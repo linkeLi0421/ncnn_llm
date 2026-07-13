@@ -15,8 +15,8 @@
       "audio": "/Users/link/llk/test_audio/chinese_fixtures/zh_short_16k.wav",
       "expected_text": "今天天气很好，我们一起测试语音识别。",
       "expected_source": "macOS TTS text",
-      "ncnn_result_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_short_default_final.json",
-      "ncnn_mel_summary_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_short_default_final_mel.json",
+      "ncnn_result_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_short_current.json",
+      "ncnn_mel_summary_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_short_current_mel.json",
       "pytorch_result_json": null,
       "pytorch_mel_summary_json": null,
       "module_summary_json": null
@@ -27,8 +27,8 @@
       "audio": "/Users/link/llk/test_audio/chinese_fixtures/zh_long_16k.wav",
       "expected_text": "这是一段较长的中文语音测试。我们希望模型能够稳定地识别连续的句子，并且在音频变长以后，仍然保持合理的文本输出。这个样例主要用于检查切块、拼接，以及端到端文本对齐是否可靠。",
       "expected_source": "macOS TTS text",
-      "ncnn_result_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_long_ncnn_fixed.json",
-      "ncnn_mel_summary_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_long_mel_fixed.json",
+      "ncnn_result_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_long_current.json",
+      "ncnn_mel_summary_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_long_current_mel.json",
       "pytorch_result_json": null,
       "pytorch_mel_summary_json": null,
       "module_summary_json": null
@@ -39,8 +39,8 @@
       "audio": "/Users/link/llk/test_audio/chinese_fixtures/zh_mixed_16k.wav",
       "expected_text": "今天是二零二六年七月十二日，OpenAI API 测试成功，订单编号是一二三四五。",
       "expected_source": "macOS TTS text",
-      "ncnn_result_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_mixed_ncnn_fixed2.json",
-      "ncnn_mel_summary_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_mixed_mel_fixed2.json",
+      "ncnn_result_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_mixed_current.json",
+      "ncnn_mel_summary_json": "/Users/link/llk/test_audio/chinese_fixtures/zh_mixed_current_mel.json",
       "pytorch_result_json": null,
       "pytorch_mel_summary_json": null,
       "module_summary_json": null

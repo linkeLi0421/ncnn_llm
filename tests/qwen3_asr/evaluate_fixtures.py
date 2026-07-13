@@ -138,8 +138,20 @@ def module_status(result: dict[str, Any] | None, module_summary: Any | None) -> 
         if isinstance(chunks, list) and chunks and isinstance(chunks[0], dict):
             if "audio_embedding" in chunks[0]:
                 out["speech_encoder_summary"] = "ncnn_audio_embedding_present"
+            first_step = chunks[0].get("first_step")
+            if isinstance(first_step, dict) and first_step.get("available"):
+                if "merged_embeds" in first_step:
+                    out["projector_or_adaptor_summary"] = "ncnn_merged_embedding_present"
+                if "selected_logits" in first_step:
+                    out["first_decoder_logits_summary"] = "ncnn_selected_logits_present"
         if "audio_embedding" in result:
             out["speech_encoder_summary"] = "ncnn_audio_embedding_present"
+        first_step = result.get("first_step")
+        if isinstance(first_step, dict) and first_step.get("available"):
+            if "merged_embeds" in first_step:
+                out["projector_or_adaptor_summary"] = "ncnn_merged_embedding_present"
+            if "selected_logits" in first_step:
+                out["first_decoder_logits_summary"] = "ncnn_selected_logits_present"
         if "lm_head" in result:
             out["first_decoder_logits_summary"] = "ncnn_lm_head_smoke_present"
     if isinstance(module_summary, dict):

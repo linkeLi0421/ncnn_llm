@@ -67,6 +67,18 @@ The script compares:
 Current pass/fail is based on normalized text only. Raw and cleaned text are kept
 in the JSON report so postprocess problems are not confused with model parity.
 
+The ncnn result JSON also carries module-localization summaries for each chunk:
+
+- `audio_embedding`;
+- `first_step.text_embeds`;
+- `first_step.merged_embeds`;
+- `first_step.hidden`;
+- `first_step.logits`;
+- `first_step.selected_logits`.
+
+These are ncnn-side summaries only. PyTorch-side summaries still need the Linux
+baseline environment.
+
 ## VM Work Still Needed
 
 The following fields require the Linux/PyTorch environment:

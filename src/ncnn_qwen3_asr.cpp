@@ -525,6 +525,49 @@ ncnn::Mat ncnn_qwen3_asr::merge_audio_embeddings(const ncnn::Mat& text_embeds,
     return merged;
 }
 
+Qwen3ASRFirstStepDebug ncnn_qwen3_asr::debug_first_step(const std::vector<int>& input_ids,
+                                                        const ncnn::Mat& audio_embeds) const {
+    Qwen3ASRFirstStepDebug debug;
+    if ((int)input_ids.size() > text_seq_len_) {
+        fprintf(stderr, "Qwen3-ASR debug input length %zu exceeds static text_seq_len %d\n", input_ids.size(), text_seq_len_);
+        return debug;
+    }
+
+    debug.prompt_len = (int)input_ids.size();
+    std::vector<int> padded_ids = input_ids;
+    padded_ids.resize((size_t)text_seq_len_, 0);
+    debug.text_embeds = run_text_embed(padded_ids);
+    if (debug.text_embeds.total() == 0) {
+        return debug;
+    }
+
+    debug.merged_embeds = merge_audio_embeddings(debug.text_embeds, input_ids, audio_embeds);
+    if (debug.merged_embeds.total() == 0) {
+        return debug;
+    }
+
+    std::vector<int> mask((size_t)text_seq_len_, 0);
+    std::fill(mask.begin(), mask.begin() + (std::vector<int>::difference_type)input_ids.size(), 1);
+    debug.hidden = run_text_backbone(debug.merged_embeds, mask);
+    if (debug.hidden.total() == 0) {
+        return debug;
+    }
+
+    debug.logits = run_lm_head(debug.hidden);
+    if (debug.logits.total() == 0) {
+        return debug;
+    }
+
+    if (debug.logits.h <= (int)input_ids.size() - 1) {
+        debug.selected_logits = debug.logits.clone();
+    } else {
+        debug.selected_logits = ncnn::Mat(debug.logits.w, (void*)debug.logits.row((int)input_ids.size() - 1), sizeof(float), 1);
+        debug.selected_logits = debug.selected_logits.clone();
+    }
+    debug.next_token = select_next_token_from_logits(debug.selected_logits);
+    return debug;
+}
+
 int ncnn_qwen3_asr::decode_next_token(const std::vector<int>& input_ids, const ncnn::Mat& audio_embeds) const {
     if ((int)input_ids.size() > text_seq_len_) {
         fprintf(stderr, "Qwen3-ASR input length %zu exceeds static text_seq_len %d\n", input_ids.size(), text_seq_len_);
