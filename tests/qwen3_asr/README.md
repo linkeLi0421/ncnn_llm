@@ -25,6 +25,13 @@ The fixture schema has nullable PyTorch fields. That is intentional: the local
 Mac can validate the ncnn output contract, while PyTorch parity will be filled
 in later on the Linux VM.
 
+To regenerate the local TTS fixtures on macOS:
+
+```bash
+tests/qwen3_asr/make_chinese_fixtures.sh \
+  --out-dir /Users/link/llk/test_audio/chinese_fixtures
+```
+
 ## ncnn Regression Entry
 
 Use `run_fixture.sh` so each run produces the same three artifacts:
@@ -78,6 +85,23 @@ The ncnn result JSON also carries module-localization summaries for each chunk:
 
 These are ncnn-side summaries only. PyTorch-side summaries still need the Linux
 baseline environment.
+
+## Platform Smoke
+
+After generating `eval_report.json`, collect a local platform smoke report:
+
+```bash
+tests/qwen3_asr/collect_platform_smoke.py \
+  --binary /Users/link/llk/build/ncnn_llm-macos-qwen3-asr/qwen3_asr_main \
+  --model /Users/link/llk/models/qwen3_asr_0_6b_runtime_text128 \
+  --eval-report /Users/link/llk/test_audio/chinese_fixtures/eval_report.json \
+  --threads 4 \
+  --json-out /Users/link/llk/test_audio/chinese_fixtures/platform_smoke.json \
+  --markdown-out /Users/link/llk/test_audio/chinese_fixtures/platform_smoke.md
+```
+
+This report is a CPU-only smoke/performance record. It should not be mixed with
+PyTorch accuracy parity.
 
 ## VM Work Still Needed
 
