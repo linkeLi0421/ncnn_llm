@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  run_fixture.sh --binary BIN --model DIR --audio WAV --out-dir DIR [--id NAME] [--threads N] [--max-new-tokens N] [--energy-chunking] [--measure-memory]
+  run_fixture.sh --binary BIN --model DIR --audio WAV --out-dir DIR [--id NAME] [--language NAME] [--threads N] [--max-new-tokens N] [--energy-chunking] [--measure-memory]
 
 Example:
   tests/qwen3_asr/run_fixture.sh \
@@ -23,6 +23,7 @@ out_dir=""
 id=""
 threads="4"
 max_new_tokens="64"
+language="Chinese"
 energy_chunking="false"
 measure_memory="false"
 
@@ -54,6 +55,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-new-tokens)
       max_new_tokens="$2"
+      shift 2
+      ;;
+    --language)
+      language="$2"
       shift 2
       ;;
     --energy-chunking)
@@ -94,6 +99,7 @@ cmd=(
   --audio-wav "$audio"
   --generate-from-features
   --max-new-tokens "$max_new_tokens"
+  --language "$language"
   --threads "$threads"
   --text-out "$out_dir/${id}.txt"
   --json-out "$out_dir/${id}.json"

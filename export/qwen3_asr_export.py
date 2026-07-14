@@ -678,6 +678,7 @@ def export_qwen3_asr(
     export_text_stack: bool = True,
     convert_ncnn: bool = False,
     pnnx_bin: str = "pnnx",
+    audio_frames: Optional[int] = None,
     text_seq_len: int = 8,
     export_kv_cache: bool = False,
     kv_cache_len: Optional[int] = None,
@@ -714,10 +715,9 @@ def export_qwen3_asr(
     lm_head_path = root / "lm_head.pt"
 
     if export_audio_encoder:
-        example_frames = min(
-            int(getattr(audio_cfg, "max_source_positions", 256) or 256),
-            256,
-        )
+        example_frames = int(audio_frames or getattr(audio_cfg, "max_source_positions", 256) or 256)
+        if example_frames <= 0:
+            raise ValueError("--audio-frames must be positive.")
         _trace_audio_encoder(
             audio_tower,
             audio_encoder_path,
@@ -804,6 +804,7 @@ def export_qwen3_asr(
             "audio_config": _to_jsonable(audio_cfg.to_dict() if hasattr(audio_cfg, "to_dict") else audio_cfg.__dict__),
             "text_config": _to_jsonable(text_cfg.to_dict() if hasattr(text_cfg, "to_dict") else text_cfg.__dict__),
             "text_seq_len": int(text_seq_len),
+            "audio_frames": int(max(16, example_frames)) if export_audio_encoder else 0,
             "kv_cache_len": int(kv_cache_len or max(1, text_seq_len - 1)),
             "kv_cache_exported": bool(export_kv_cache),
             "support_languages": _to_jsonable(getattr(model.config, "support_languages", None)),
@@ -892,6 +893,7 @@ def main() -> None:
     parser.add_argument("--no-text-stack", action="store_true", help="Skip exporting the text stack.")
     parser.add_argument("--convert-ncnn", action="store_true", help="Run pnnx on exported TorchScript modules.")
     parser.add_argument("--pnnx-bin", default="pnnx", help="Path to pnnx executable.")
+    parser.add_argument("--audio-frames", type=int, default=None, help="Static log-mel frame count for traced audio encoder.")
     parser.add_argument("--text-seq-len", type=int, default=8, help="Static text sequence length for traced text modules.")
     parser.add_argument("--export-kv-cache", action="store_true", help="Also export cache-aware text prefill/decode modules.")
     parser.add_argument("--kv-cache-len", type=int, default=None, help="Static past length for the traced one-token KV decoder.")
@@ -906,6 +908,7 @@ def main() -> None:
         export_text_stack=not args.no_text_stack,
         convert_ncnn=args.convert_ncnn,
         pnnx_bin=args.pnnx_bin,
+        audio_frames=args.audio_frames,
         text_seq_len=args.text_seq_len,
         export_kv_cache=args.export_kv_cache,
         kv_cache_len=args.kv_cache_len,

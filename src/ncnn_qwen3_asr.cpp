@@ -234,6 +234,21 @@ static int extract_decode_cache_blob(ncnn::Extractor& ex, int layer, bool key, n
     return ex.extract(numbered, value);
 }
 
+static ncnn::Mat crop_cache_sequence(const ncnn::Mat& cache, int sequence_length) {
+    if (sequence_length <= 0 || cache.dims != 3 || cache.h <= sequence_length) {
+        return cache;
+    }
+    ncnn::Mat out(cache.w, sequence_length, cache.c);
+    for (int q = 0; q < cache.c; q++) {
+        const ncnn::Mat src = cache.channel(q);
+        ncnn::Mat dst = out.channel(q);
+        for (int y = 0; y < sequence_length; y++) {
+            std::memcpy(dst.row(y), src.row(y), sizeof(float) * (size_t)cache.w);
+        }
+    }
+    return out;
+}
+
 ncnn::Mat ncnn_qwen3_asr::run_audio_encoder(const ncnn::Mat& mel_features) const {
     ncnn::Mat out;
     ncnn::Extractor ex = audio_encoder_net_->create_extractor();
@@ -310,6 +325,8 @@ ncnn::Mat ncnn_qwen3_asr::run_text_prefill_kv(const ncnn::Mat& input_embeds,
             state.kv_cache.clear();
             return {};
         }
+        k_cache = crop_cache_sequence(k_cache, (int)attention_mask.size());
+        v_cache = crop_cache_sequence(v_cache, (int)attention_mask.size());
         state.kv_cache.emplace_back(std::move(k_cache), std::move(v_cache));
     }
 
