@@ -200,12 +200,58 @@ def move_processor_inputs(inputs: Any, device: Any, dtype: Any) -> Any:
     return moved
 
 
+def one_token_id(tokenizer: Any, text: str) -> int:
+    ids = tokenizer.encode(text, add_special_tokens=False)
+    if len(ids) != 1:
+        raise ValueError(f"expected one token for {text!r}, got {ids}")
+    return int(ids[0])
+
+
+def special_token_id(tokenizer: Any, token: str) -> int:
+    token_id = tokenizer.convert_tokens_to_ids(token)
+    if token_id is None or token_id < 0:
+        raise ValueError(f"missing special token id for {token!r}")
+    return int(token_id)
+
+
+def build_static_prompt_ids(model: Any, audio_token_count: int, language: str) -> list[int]:
+    thinker = model.model.thinker
+    tokenizer = model.processor.tokenizer
+    ids = [
+        special_token_id(tokenizer, "<|im_start|>"),
+        one_token_id(tokenizer, "system"),
+        one_token_id(tokenizer, "\n"),
+        special_token_id(tokenizer, "<|im_end|>"),
+        one_token_id(tokenizer, "\n"),
+        special_token_id(tokenizer, "<|im_start|>"),
+        one_token_id(tokenizer, "user"),
+        one_token_id(tokenizer, "\n"),
+        int(thinker.config.audio_start_token_id),
+    ]
+    ids.extend([int(thinker.config.audio_token_id)] * audio_token_count)
+    ids.extend([
+        int(thinker.config.audio_end_token_id),
+        special_token_id(tokenizer, "<|im_end|>"),
+        one_token_id(tokenizer, "\n"),
+        special_token_id(tokenizer, "<|im_start|>"),
+        one_token_id(tokenizer, "assistant"),
+        one_token_id(tokenizer, "\n"),
+    ])
+    if language:
+        ids.extend(int(x) for x in tokenizer.encode("language " + language, add_special_tokens=False))
+        ids.append(special_token_id(tokenizer, "<asr_text>"))
+    return ids
+
+
 def pytorch_module_summaries(
     model: Any,
     audio: np.ndarray,
     chunks: list[tuple[int, int]],
     language: str,
     max_chunks: int,
+    frames: int,
+    hop_length: int,
+    sample_rate: int,
 ) -> dict[str, Any]:
     import torch
 
@@ -216,23 +262,45 @@ def pytorch_module_summaries(
     device = model.model.device
     dtype = model.model.dtype
     prompt = model._build_text_prompt(context="", force_language=language)
+    feature_extractor = model.processor.feature_extractor
     out_chunks = []
 
     for chunk_index, (start_sample, end_sample) in enumerate(chunks[:max_chunks]):
         chunk = audio[start_sample:end_sample]
-        inputs = model.processor(text=[prompt], audio=[chunk], return_tensors="pt", padding=True)
-        inputs = move_processor_inputs(inputs, device, dtype)
+        features = feature_extractor(
+            chunk,
+            sampling_rate=sample_rate,
+            return_tensors="pt",
+            padding="max_length",
+            max_length=frames * hop_length,
+            truncation=True,
+            return_attention_mask=True,
+        )
+        input_features = features["input_features"].to(device=device, dtype=dtype)
+        feature_attention_mask = torch.ones_like(features["attention_mask"], device=device)
+        with torch.no_grad():
+            audio_features = thinker.get_audio_features(
+                input_features,
+                feature_attention_mask=feature_attention_mask,
+                audio_feature_lengths=None,
+            )
+        input_ids = torch.tensor(
+            [build_static_prompt_ids(model, int(audio_features.shape[0]), language)],
+            device=device,
+            dtype=torch.long,
+        )
+        attention_mask = torch.ones_like(input_ids)
+        inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "input_features": input_features,
+            "feature_attention_mask": feature_attention_mask,
+        }
         input_ids = inputs["input_ids"]
-        attention_mask = inputs.get("attention_mask")
-        prompt_len = int(attention_mask[0].sum().item()) if attention_mask is not None else int(input_ids.shape[1])
+        prompt_len = int(attention_mask[0].sum().item())
 
         with torch.no_grad():
             text_embeds = thinker.get_input_embeddings()(input_ids)
-            audio_features = thinker.get_audio_features(
-                inputs["input_features"],
-                feature_attention_mask=inputs.get("feature_attention_mask"),
-                audio_feature_lengths=inputs.get("audio_feature_lengths"),
-            )
             audio_features = audio_features.to(text_embeds.device, text_embeds.dtype)
             audio_mask = thinker.get_placeholder_mask(input_ids, inputs_embeds=text_embeds)
             merged_embeds = text_embeds.masked_scatter(audio_mask, audio_features)
@@ -387,6 +455,9 @@ def main() -> int:
             chunks,
             args.language,
             args.module_summary_chunks,
+            args.frames,
+            args.hop_length,
+            sample_rate,
         )
         write_json(result_path, result)
         write_json(mel_path, mel)

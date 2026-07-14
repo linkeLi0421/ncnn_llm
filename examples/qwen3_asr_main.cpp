@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -585,6 +586,21 @@ static json mat_summary_json(const ncnn::Mat& mat, int first_value_count = 12) {
     return out;
 }
 
+static ncnn::Mat first_rows(const ncnn::Mat& mat, int rows) {
+    if (rows <= 0 || mat.dims != 2 || mat.h <= rows) {
+        return mat;
+    }
+    ncnn::Mat out(mat.w, rows);
+    for (int y = 0; y < rows; y++) {
+        std::memcpy(out.row(y), mat.row(y), sizeof(float) * (size_t)mat.w);
+    }
+    return out;
+}
+
+static json mat_prompt_summary_json(const ncnn::Mat& mat, int prompt_len, int first_value_count = 0) {
+    return mat_summary_json(first_rows(mat, prompt_len), first_value_count);
+}
+
 static json mel_summary_json(const ncnn::Mat& mel,
                              const Args& args,
                              const std::string& source,
@@ -623,10 +639,10 @@ static json first_step_debug_json(const Qwen3ASRFirstStepDebug& debug) {
         {"available", true},
         {"prompt_len", debug.prompt_len},
         {"next_token", debug.next_token},
-        {"text_embeds", mat_summary_json(debug.text_embeds, 0)},
-        {"merged_embeds", mat_summary_json(debug.merged_embeds, 0)},
-        {"hidden", mat_summary_json(debug.hidden, 0)},
-        {"logits", mat_summary_json(debug.logits, 0)},
+        {"text_embeds", mat_prompt_summary_json(debug.text_embeds, debug.prompt_len, 0)},
+        {"merged_embeds", mat_prompt_summary_json(debug.merged_embeds, debug.prompt_len, 0)},
+        {"hidden", mat_prompt_summary_json(debug.hidden, debug.prompt_len, 0)},
+        {"logits", mat_prompt_summary_json(debug.logits, debug.prompt_len, 0)},
         {"selected_logits", mat_summary_json(debug.selected_logits, 12)}
     };
 }

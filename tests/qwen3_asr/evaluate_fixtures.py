@@ -192,6 +192,78 @@ def module_status(result: dict[str, Any] | None, module_summary: Any | None) -> 
     return out
 
 
+def first_chunk(value: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    chunks = value.get("chunks", [])
+    if isinstance(chunks, list) and chunks and isinstance(chunks[0], dict):
+        return chunks[0]
+    return value
+
+
+def summary_shape(summary: dict[str, Any] | None) -> list[int | None]:
+    if not isinstance(summary, dict):
+        return []
+    if isinstance(summary.get("shape"), list):
+        return [int(x) for x in summary["shape"]]
+    if summary.get("dims") == 1 and summary.get("w") is not None:
+        return [int(summary["w"])]
+    if summary.get("h") is not None and summary.get("w") is not None:
+        return [int(summary["h"]), int(summary["w"])]
+    if summary.get("w") is not None:
+        return [int(summary["w"])]
+    return []
+
+
+def compare_summary_stats(ncnn: dict[str, Any] | None, pytorch: dict[str, Any] | None) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "ncnn_shape": summary_shape(ncnn),
+        "pytorch_shape": summary_shape(pytorch),
+    }
+    out["shape_match"] = bool(out["ncnn_shape"]) and out["ncnn_shape"] == out["pytorch_shape"]
+    for key in ("mean", "std", "min", "max"):
+        nv = ncnn.get(key) if isinstance(ncnn, dict) else None
+        pv = pytorch.get(key) if isinstance(pytorch, dict) else None
+        if isinstance(nv, (int, float)) and isinstance(pv, (int, float)):
+            out[f"{key}_abs_diff"] = abs(float(nv) - float(pv))
+    n_first = ncnn.get("first_values", []) if isinstance(ncnn, dict) else []
+    p_first = pytorch.get("first_values", []) if isinstance(pytorch, dict) else []
+    if isinstance(n_first, list) and isinstance(p_first, list) and n_first and p_first:
+        count = min(len(n_first), len(p_first))
+        diffs = [abs(float(n_first[i]) - float(p_first[i])) for i in range(count)]
+        out["first_values_count"] = count
+        out["first_values_max_abs_diff"] = max(diffs)
+        out["first_values_mean_abs_diff"] = sum(diffs) / count
+    return out
+
+
+def module_compare(result: dict[str, Any] | None, module_summary: Any | None) -> dict[str, Any]:
+    ncnn_chunk = first_chunk(result)
+    pytorch_chunk = first_chunk(module_summary)
+    ncnn_first = ncnn_chunk.get("first_step") if isinstance(ncnn_chunk, dict) else None
+    pytorch_first = pytorch_chunk.get("first_step") if isinstance(pytorch_chunk, dict) else None
+    out: dict[str, Any] = {
+        "available": isinstance(ncnn_first, dict) and isinstance(pytorch_first, dict),
+        "next_token_match": None,
+        "prompt_len_match": None,
+        "summaries": {},
+    }
+    if not out["available"]:
+        return out
+    out["next_token_match"] = ncnn_first.get("next_token") == pytorch_first.get("next_token")
+    out["prompt_len_match"] = ncnn_first.get("prompt_len") == pytorch_first.get("prompt_len")
+    out["audio_embedding"] = compare_summary_stats(
+        ncnn_chunk.get("audio_embedding") if isinstance(ncnn_chunk, dict) else None,
+        pytorch_chunk.get("audio_embedding") if isinstance(pytorch_chunk, dict) else None,
+    )
+    for key in ("text_embeds", "merged_embeds", "hidden", "logits", "selected_logits"):
+        out["summaries"][key] = compare_summary_stats(ncnn_first.get(key), pytorch_first.get(key))
+    shape_checks = [out["audio_embedding"].get("shape_match")]
+    shape_checks.extend(v.get("shape_match") for v in out["summaries"].values())
+    out["shape_match"] = all(bool(x) for x in shape_checks)
+    return out
+
+
 def chunk_summary(result: dict[str, Any] | None) -> str:
     if not result:
         return ""
@@ -248,6 +320,7 @@ def evaluate_fixture(fixture: dict[str, Any]) -> dict[str, Any]:
         "chunking_strategy": ncnn_result.get("chunking_strategy") if isinstance(ncnn_result, dict) else None,
         "mel": compare_mel(ncnn_mel, pytorch_mel),
         "modules": module_status(ncnn_result, modules),
+        "module_compare": module_compare(ncnn_result, modules),
     }
 
 
@@ -273,6 +346,12 @@ def markdown_report(results: list[dict[str, Any]]) -> str:
         modules = r["modules"]
         if modules.get("pytorch_first_decoder_logits_summary") == "present":
             notes.append("PyTorch module summary present")
+        module_cmp = r["module_compare"]
+        if module_cmp.get("available"):
+            if module_cmp.get("shape_match") and module_cmp.get("next_token_match"):
+                notes.append("module summary aligned")
+            else:
+                notes.append("module summary mismatch")
         pytorch = r["pytorch"] or {"normalized": ""}
         pytorch_strict = "N/A" if r["pytorch_pass"] is None else ("PASS" if r["pytorch_pass"] else "FAIL")
         pytorch_semantic = (
