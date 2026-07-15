@@ -39,6 +39,7 @@ Use `run_fixture.sh` so each run produces the same three artifacts:
 - final text;
 - structured result JSON;
 - mel summary JSON.
+- optional module raw `.f32` tensors for numeric parity.
 
 Example:
 
@@ -50,7 +51,9 @@ tests/qwen3_asr/run_fixture.sh \
   --out-dir /Users/link/llk/test_audio/chinese_fixtures \
   --id zh_short_default_final \
   --threads 6 \
+  --frames 1878 \
   --max-new-tokens 64 \
+  --dump-module-raw \
   --measure-memory
 ```
 
@@ -72,6 +75,7 @@ The script compares:
 - ncnn mel summary presence and preprocessing fields;
 - optional PyTorch mel summary when available;
 - optional module-level summary when available.
+- optional raw tensor metrics when both sides provide `raw_path`.
 
 Strict pass/fail is based on normalized text. Semantic pass/fail is reported
 separately and is intentionally limited to documented abbreviation variants such
@@ -95,9 +99,10 @@ the first fixed chunk by default:
 - first decoder hidden/logits;
 - selected first-step logits and greedy next token.
 
-These summaries intentionally use the same fixed overlap chunks as the ncnn
-runner, not the full-audio feature tensor used by the end-to-end PyTorch
-transcribe call.
+These summaries intentionally use the same fixed/static audio path as the ncnn
+runner for module localization, not necessarily the dynamic feature mask used by
+the end-to-end PyTorch transcribe call. Pass `--dump-module-raw` on both the
+ncnn and PyTorch runners to write comparable `.f32` tensors for numeric parity.
 
 ## PyTorch Baseline
 
@@ -114,7 +119,9 @@ tests/qwen3_asr/run_pytorch_fixtures.py \
   --device-map cuda \
   --language Chinese \
   --max-new-tokens 128 \
-  --module-summary-chunks 1
+  --frames 1878 \
+  --module-summary-chunks 1 \
+  --dump-module-raw
 ```
 
 The script writes:
@@ -123,6 +130,7 @@ The script writes:
 - `*_pytorch_mel.json` for official feature-extractor summaries on the same
   fixed overlap chunks used by the ncnn runner;
 - `*_pytorch_modules.json` for PyTorch module-level summaries on fixed chunks;
+- `*_module_raw/*.f32` when `--dump-module-raw` is set;
 - an updated fixture JSON that can be passed to `evaluate_fixtures.py`.
 
 ## Platform Smoke
@@ -159,8 +167,9 @@ The Linux/PyTorch environment can now fill:
 - PyTorch mel summary JSON for each fixture;
 - PyTorch module-level summaries for speech encoder output, merged embedding,
   hidden state, first decoder logits, and selected logits.
+- optional raw `.f32` tensors for ncnn/PyTorch module parity.
 
-Suggested numeric comparisons for module-level parity:
+When both sides provide `raw_path`, `evaluate_fixtures.py` computes:
 
 - `max_abs`;
 - `mean_abs`;

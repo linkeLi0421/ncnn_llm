@@ -192,6 +192,24 @@ def torch_tensor_summary(tensor: Any, first_value_count: int = 12) -> dict[str, 
     return summary
 
 
+def torch_tensor_summary_with_raw(
+    tensor: Any,
+    first_value_count: int = 12,
+    raw_path: str | Path | None = None,
+) -> dict[str, Any]:
+    import torch
+
+    with torch.no_grad():
+        values = tensor.detach().float().cpu().contiguous()
+    summary = torch_tensor_summary(values, first_value_count=first_value_count)
+    if raw_path is not None:
+        path = Path(raw_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        values.numpy().astype(np.float32, copy=False).tofile(path)
+        summary["raw_path"] = str(path)
+    return summary
+
+
 def move_processor_inputs(inputs: Any, device: Any, dtype: Any) -> Any:
     moved = inputs.to(device)
     for key, value in list(moved.items()):
@@ -252,6 +270,7 @@ def pytorch_module_summaries(
     frames: int,
     hop_length: int,
     sample_rate: int,
+    raw_dir: Path | None = None,
 ) -> dict[str, Any]:
     import torch
 
@@ -319,14 +338,34 @@ def pytorch_module_summaries(
             "available": True,
             "prompt_len": prompt_len,
             "audio_tokens": int((input_ids == thinker.config.audio_token_id).sum().item()),
-            "text_embeds": torch_tensor_summary(text_embeds[0], first_value_count=0),
-            "merged_embeds": torch_tensor_summary(merged_embeds[0], first_value_count=0),
-            "logits": torch_tensor_summary(logits, first_value_count=0),
-            "selected_logits": torch_tensor_summary(selected_logits, first_value_count=12),
+            "text_embeds": torch_tensor_summary_with_raw(
+                text_embeds[0],
+                first_value_count=0,
+                raw_path=raw_dir / f"chunk{chunk_index}_text_embeds.f32" if raw_dir else None,
+            ),
+            "merged_embeds": torch_tensor_summary_with_raw(
+                merged_embeds[0],
+                first_value_count=0,
+                raw_path=raw_dir / f"chunk{chunk_index}_merged_embeds.f32" if raw_dir else None,
+            ),
+            "logits": torch_tensor_summary_with_raw(
+                logits,
+                first_value_count=0,
+                raw_path=raw_dir / f"chunk{chunk_index}_logits.f32" if raw_dir else None,
+            ),
+            "selected_logits": torch_tensor_summary_with_raw(
+                selected_logits,
+                first_value_count=12,
+                raw_path=raw_dir / f"chunk{chunk_index}_selected_logits.f32" if raw_dir else None,
+            ),
             "next_token": next_token,
         }
         if hidden is not None:
-            first_step["hidden"] = torch_tensor_summary(hidden, first_value_count=0)
+            first_step["hidden"] = torch_tensor_summary_with_raw(
+                hidden,
+                first_value_count=0,
+                raw_path=raw_dir / f"chunk{chunk_index}_hidden.f32" if raw_dir else None,
+            )
 
         out_chunks.append({
             "index": chunk_index,
@@ -336,7 +375,11 @@ def pytorch_module_summaries(
             "input_features_shape": list(inputs["input_features"].shape),
             "feature_attention_mask_shape": list(inputs["feature_attention_mask"].shape)
             if "feature_attention_mask" in inputs else None,
-            "audio_embedding": torch_tensor_summary(audio_features, first_value_count=0),
+            "audio_embedding": torch_tensor_summary_with_raw(
+                audio_features,
+                first_value_count=0,
+                raw_path=raw_dir / f"chunk{chunk_index}_audio_embedding.f32" if raw_dir else None,
+            ),
             "first_step": first_step,
         })
 
@@ -363,6 +406,7 @@ def main() -> int:
     parser.add_argument("--n-fft", type=int, default=400)
     parser.add_argument("--mel-bins", type=int, default=128)
     parser.add_argument("--chunk-overlap-frames", type=int, default=32)
+    parser.add_argument("--dump-module-raw", action="store_true", help="Write raw float32 tensors for module parity.")
     parser.add_argument(
         "--module-summary-chunks",
         type=int,
@@ -449,6 +493,7 @@ def main() -> int:
         result_path = out_dir / f"{fixture_id}_pytorch.json"
         mel_path = out_dir / f"{fixture_id}_pytorch_mel.json"
         module_path = out_dir / f"{fixture_id}_pytorch_modules.json"
+        module_raw_dir = out_dir / f"{fixture_id}_module_raw" if args.dump_module_raw else None
         modules = pytorch_module_summaries(
             model,
             audio,
@@ -458,6 +503,7 @@ def main() -> int:
             args.frames,
             args.hop_length,
             sample_rate,
+            module_raw_dir,
         )
         write_json(result_path, result)
         write_json(mel_path, mel)

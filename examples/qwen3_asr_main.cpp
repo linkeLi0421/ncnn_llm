@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -25,6 +26,7 @@ struct Args {
     std::string audio_wav;
     std::string dump_mel_raw;
     std::string dump_mel_summary;
+    std::string dump_module_raw_dir;
     std::string text_out;
     std::string json_out;
     int mel_bins = 128;
@@ -48,6 +50,7 @@ static void print_usage(const char* prog) {
         << "                 [--mel-bins N --frames N]\n"
         << "                 [--tokens comma,separated,ids] [--generate-from-features]\n"
         << "                 [--dump-mel-raw FILE] [--dump-mel-summary FILE]\n"
+        << "                 [--dump-module-raw DIR]\n"
         << "                 [--text-out FILE] [--json-out FILE]\n"
         << "                 [--context TEXT] [--language NAME] [--max-new-tokens N]\n"
         << "                 [--chunk-overlap-frames N] [--energy-chunking]\n"
@@ -97,6 +100,9 @@ static Args parse_args(int argc, char** argv) {
         } else if (arg == "--dump-mel-summary") {
             need_value("--dump-mel-summary");
             args.dump_mel_summary = argv[++i];
+        } else if (arg == "--dump-module-raw") {
+            need_value("--dump-module-raw");
+            args.dump_module_raw_dir = argv[++i];
         } else if (arg == "--text-out") {
             need_value("--text-out");
             args.text_out = argv[++i];
@@ -502,6 +508,10 @@ static bool read_file(const std::string& path, std::vector<float>& values) {
 }
 
 static bool write_mat_raw(const std::string& path, const ncnn::Mat& mat) {
+    std::filesystem::path fs_path(path);
+    if (fs_path.has_parent_path()) {
+        std::filesystem::create_directories(fs_path.parent_path());
+    }
     std::ofstream f(path, std::ios::binary);
     if (!f) {
         return false;
@@ -511,6 +521,10 @@ static bool write_mat_raw(const std::string& path, const ncnn::Mat& mat) {
         f.write(reinterpret_cast<const char*>(row), (std::streamsize)mat.w * (std::streamsize)sizeof(float));
     }
     return (bool)f;
+}
+
+static std::string join_path(const std::string& dir, const std::string& name) {
+    return (std::filesystem::path(dir) / name).string();
 }
 
 static bool write_text_file(const std::string& path, const std::string& text) {
@@ -601,6 +615,31 @@ static json mat_prompt_summary_json(const ncnn::Mat& mat, int prompt_len, int fi
     return mat_summary_json(first_rows(mat, prompt_len), first_value_count);
 }
 
+static json mat_summary_json_with_raw(const ncnn::Mat& mat,
+                                      int first_value_count,
+                                      const std::string& raw_dir,
+                                      const std::string& raw_name) {
+    json out = mat_summary_json(mat, first_value_count);
+    if (!raw_dir.empty()) {
+        const std::string path = join_path(raw_dir, raw_name);
+        if (write_mat_raw(path, mat)) {
+            out["raw_path"] = path;
+        } else {
+            out["raw_error"] = "failed_to_write_raw";
+        }
+    }
+    return out;
+}
+
+static json mat_prompt_summary_json_with_raw(const ncnn::Mat& mat,
+                                             int prompt_len,
+                                             int first_value_count,
+                                             const std::string& raw_dir,
+                                             const std::string& raw_name) {
+    ncnn::Mat prompt_mat = first_rows(mat, prompt_len);
+    return mat_summary_json_with_raw(prompt_mat, first_value_count, raw_dir, raw_name);
+}
+
 static json mel_summary_json(const ncnn::Mat& mel,
                              const Args& args,
                              const std::string& source,
@@ -631,7 +670,9 @@ static json mel_summary_json(const ncnn::Mat& mel,
     return out;
 }
 
-static json first_step_debug_json(const Qwen3ASRFirstStepDebug& debug) {
+static json first_step_debug_json(const Qwen3ASRFirstStepDebug& debug,
+                                  const std::string& raw_dir = "",
+                                  const std::string& raw_prefix = "") {
     if (debug.prompt_len <= 0 || debug.selected_logits.total() == 0) {
         return {{"available", false}};
     }
@@ -639,11 +680,11 @@ static json first_step_debug_json(const Qwen3ASRFirstStepDebug& debug) {
         {"available", true},
         {"prompt_len", debug.prompt_len},
         {"next_token", debug.next_token},
-        {"text_embeds", mat_prompt_summary_json(debug.text_embeds, debug.prompt_len, 0)},
-        {"merged_embeds", mat_prompt_summary_json(debug.merged_embeds, debug.prompt_len, 0)},
-        {"hidden", mat_prompt_summary_json(debug.hidden, debug.prompt_len, 0)},
-        {"logits", mat_prompt_summary_json(debug.logits, debug.prompt_len, 0)},
-        {"selected_logits", mat_summary_json(debug.selected_logits, 12)}
+        {"text_embeds", mat_prompt_summary_json_with_raw(debug.text_embeds, debug.prompt_len, 0, raw_dir, raw_prefix + "text_embeds.f32")},
+        {"merged_embeds", mat_prompt_summary_json_with_raw(debug.merged_embeds, debug.prompt_len, 0, raw_dir, raw_prefix + "merged_embeds.f32")},
+        {"hidden", mat_prompt_summary_json_with_raw(debug.hidden, debug.prompt_len, 0, raw_dir, raw_prefix + "hidden.f32")},
+        {"logits", mat_prompt_summary_json_with_raw(debug.logits, debug.prompt_len, 0, raw_dir, raw_prefix + "logits.f32")},
+        {"selected_logits", mat_summary_json_with_raw(debug.selected_logits, 12, raw_dir, raw_prefix + "selected_logits.f32")}
     };
 }
 
@@ -899,6 +940,7 @@ int main(int argc, char** argv) {
                 std::vector<int> debug_prompt_ids = asr.build_prompt_ids(audio.h, args.context, args.language);
                 Qwen3ASRFirstStepDebug first_step_debug = asr.debug_first_step(debug_prompt_ids, audio);
                 Qwen3ASRResult result = decode_audio(asr, audio, args, prefix);
+                const std::string raw_prefix = "chunk" + std::to_string(chunk_index) + "_";
                 run_report["chunks"].push_back({
                     {"index", chunk_index},
                     {"start_sample", start},
@@ -906,8 +948,8 @@ int main(int argc, char** argv) {
                     {"language", result.language},
                     {"raw_text", result.raw_text},
                     {"text", result.text},
-                    {"audio_embedding", mat_summary_json(audio, 0)},
-                    {"first_step", first_step_debug_json(first_step_debug)}
+                    {"audio_embedding", mat_summary_json_with_raw(audio, 0, args.dump_module_raw_dir, raw_prefix + "audio_embedding.f32")},
+                    {"first_step", first_step_debug_json(first_step_debug, args.dump_module_raw_dir, raw_prefix)}
                 });
                 if (!result.text.empty()) {
                     chunk_texts.push_back(result.text);
@@ -963,9 +1005,9 @@ int main(int argc, char** argv) {
             std::cout << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
         }
         print_mat_shape("audio_encoder", audio);
-        run_report["audio_embedding"] = mat_summary_json(audio, 0);
+        run_report["audio_embedding"] = mat_summary_json_with_raw(audio, 0, args.dump_module_raw_dir, "audio_embedding.f32");
         std::vector<int> debug_prompt_ids = asr.build_prompt_ids(audio.h, args.context, args.language);
-        run_report["first_step"] = first_step_debug_json(asr.debug_first_step(debug_prompt_ids, audio));
+        run_report["first_step"] = first_step_debug_json(asr.debug_first_step(debug_prompt_ids, audio), args.dump_module_raw_dir);
     }
 
     if (!args.audio_features_raw.empty()) {
@@ -996,9 +1038,9 @@ int main(int argc, char** argv) {
             std::cout << "audio_encoder_time_ms=" << elapsed_ms(audio_start, audio_end) << "\n";
         }
         print_mat_shape("audio_encoder", audio);
-        run_report["audio_embedding"] = mat_summary_json(audio, 0);
+        run_report["audio_embedding"] = mat_summary_json_with_raw(audio, 0, args.dump_module_raw_dir, "audio_embedding.f32");
         std::vector<int> debug_prompt_ids = asr.build_prompt_ids(audio.h, args.context, args.language);
-        run_report["first_step"] = first_step_debug_json(asr.debug_first_step(debug_prompt_ids, audio));
+        run_report["first_step"] = first_step_debug_json(asr.debug_first_step(debug_prompt_ids, audio), args.dump_module_raw_dir);
     }
 
     if (args.generate_from_features) {

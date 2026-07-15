@@ -9,6 +9,7 @@ run PyTorch or ncnn by itself.
 from __future__ import annotations
 
 import argparse
+import array
 import json
 import math
 import re
@@ -215,7 +216,87 @@ def summary_shape(summary: dict[str, Any] | None) -> list[int | None]:
     return []
 
 
-def compare_summary_stats(ncnn: dict[str, Any] | None, pytorch: dict[str, Any] | None) -> dict[str, Any]:
+def raw_tensor_metrics(ncnn: dict[str, Any] | None, pytorch: dict[str, Any] | None, topk: int = 0) -> dict[str, Any]:
+    if not isinstance(ncnn, dict) or not isinstance(pytorch, dict):
+        return {}
+    n_path = ncnn.get("raw_path")
+    p_path = pytorch.get("raw_path")
+    if not n_path or not p_path:
+        return {}
+    n_file = Path(str(n_path))
+    p_file = Path(str(p_path))
+    if not n_file.exists() or not p_file.exists():
+        return {"raw_status": "missing_raw_file", "ncnn_raw_path": str(n_path), "pytorch_raw_path": str(p_path)}
+    try:
+        import numpy as np  # type: ignore
+
+        n_values = np.fromfile(n_file, dtype=np.float32)
+        p_values = np.fromfile(p_file, dtype=np.float32)
+        if n_values.shape != p_values.shape:
+            return {
+                "raw_status": "raw_size_mismatch",
+                "ncnn_raw_values": int(n_values.size),
+                "pytorch_raw_values": int(p_values.size),
+            }
+        if n_values.size == 0:
+            return {"raw_status": "empty_raw"}
+        diff = np.abs(n_values - p_values)
+        n64 = n_values.astype(np.float64)
+        p64 = p_values.astype(np.float64)
+        n_norm = float(np.linalg.norm(n64))
+        p_norm = float(np.linalg.norm(p64))
+        metrics: dict[str, Any] = {
+            "raw_status": "ok",
+            "raw_values": int(n_values.size),
+            "max_abs": float(diff.max()),
+            "mean_abs": float(diff.mean(dtype=np.float64)),
+            "p99_abs": float(np.percentile(diff, 99)),
+            "cosine": None if n_norm == 0.0 or p_norm == 0.0 else float(np.dot(n64, p64) / (n_norm * p_norm)),
+        }
+        if topk > 0 and n_values.size >= topk and p_values.size >= topk:
+            n_top = set(np.argpartition(n_values, -topk)[-topk:].tolist())
+            p_top = set(np.argpartition(p_values, -topk)[-topk:].tolist())
+            metrics[f"top{topk}_overlap"] = len(n_top & p_top)
+            metrics[f"top{topk}_agreement"] = float(len(n_top & p_top) / topk)
+            metrics["argmax_match"] = int(np.argmax(n_values)) == int(np.argmax(p_values))
+        return metrics
+    except ModuleNotFoundError:
+        n_values = array.array("f")
+        p_values = array.array("f")
+        n_values.frombytes(n_file.read_bytes())
+        p_values.frombytes(p_file.read_bytes())
+        if len(n_values) != len(p_values):
+            return {
+                "raw_status": "raw_size_mismatch",
+                "ncnn_raw_values": len(n_values),
+                "pytorch_raw_values": len(p_values),
+            }
+        if not n_values:
+            return {"raw_status": "empty_raw"}
+        diffs = [abs(float(a) - float(b)) for a, b in zip(n_values, p_values)]
+        dot = sum(float(a) * float(b) for a, b in zip(n_values, p_values))
+        n_norm = math.sqrt(sum(float(a) * float(a) for a in n_values))
+        p_norm = math.sqrt(sum(float(b) * float(b) for b in p_values))
+        sorted_diffs = sorted(diffs)
+        p99_index = min(len(sorted_diffs) - 1, int(math.ceil(0.99 * len(sorted_diffs))) - 1)
+        metrics = {
+            "raw_status": "ok",
+            "raw_values": len(n_values),
+            "max_abs": max(diffs),
+            "mean_abs": sum(diffs) / len(diffs),
+            "p99_abs": sorted_diffs[p99_index],
+            "cosine": None if n_norm == 0.0 or p_norm == 0.0 else dot / (n_norm * p_norm),
+        }
+        if topk > 0 and len(n_values) >= topk:
+            n_top = {i for i, _ in sorted(enumerate(n_values), key=lambda item: item[1], reverse=True)[:topk]}
+            p_top = {i for i, _ in sorted(enumerate(p_values), key=lambda item: item[1], reverse=True)[:topk]}
+            metrics[f"top{topk}_overlap"] = len(n_top & p_top)
+            metrics[f"top{topk}_agreement"] = len(n_top & p_top) / topk
+            metrics["argmax_match"] = max(range(len(n_values)), key=lambda i: n_values[i]) == max(range(len(p_values)), key=lambda i: p_values[i])
+        return metrics
+
+
+def compare_summary_stats(ncnn: dict[str, Any] | None, pytorch: dict[str, Any] | None, topk: int = 0) -> dict[str, Any]:
     out: dict[str, Any] = {
         "ncnn_shape": summary_shape(ncnn),
         "pytorch_shape": summary_shape(pytorch),
@@ -234,6 +315,9 @@ def compare_summary_stats(ncnn: dict[str, Any] | None, pytorch: dict[str, Any] |
         out["first_values_count"] = count
         out["first_values_max_abs_diff"] = max(diffs)
         out["first_values_mean_abs_diff"] = sum(diffs) / count
+    raw = raw_tensor_metrics(ncnn, pytorch, topk=topk)
+    if raw:
+        out["raw"] = raw
     return out
 
 
@@ -257,7 +341,7 @@ def module_compare(result: dict[str, Any] | None, module_summary: Any | None) ->
         pytorch_chunk.get("audio_embedding") if isinstance(pytorch_chunk, dict) else None,
     )
     for key in ("text_embeds", "merged_embeds", "hidden", "logits", "selected_logits"):
-        out["summaries"][key] = compare_summary_stats(ncnn_first.get(key), pytorch_first.get(key))
+        out["summaries"][key] = compare_summary_stats(ncnn_first.get(key), pytorch_first.get(key), topk=5 if key == "selected_logits" else 0)
     shape_checks = [out["audio_embedding"].get("shape_match")]
     shape_checks.extend(v.get("shape_match") for v in out["summaries"].values())
     out["shape_match"] = all(bool(x) for x in shape_checks)
@@ -352,6 +436,9 @@ def markdown_report(results: list[dict[str, Any]]) -> str:
                 notes.append("module summary aligned")
             else:
                 notes.append("module summary mismatch")
+            selected_raw = module_cmp.get("summaries", {}).get("selected_logits", {}).get("raw", {})
+            if selected_raw.get("raw_status") == "ok":
+                notes.append("raw tensor metrics present")
         pytorch = r["pytorch"] or {"normalized": ""}
         pytorch_strict = "N/A" if r["pytorch_pass"] is None else ("PASS" if r["pytorch_pass"] else "FAIL")
         pytorch_semantic = (

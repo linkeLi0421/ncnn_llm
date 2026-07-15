@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  run_fixture.sh --binary BIN --model DIR --audio WAV --out-dir DIR [--id NAME] [--language NAME] [--threads N] [--max-new-tokens N] [--energy-chunking] [--measure-memory]
+  run_fixture.sh --binary BIN --model DIR --audio WAV --out-dir DIR [--id NAME] [--language NAME] [--threads N] [--frames N] [--max-new-tokens N] [--energy-chunking] [--dump-module-raw] [--measure-memory]
 
 Example:
   tests/qwen3_asr/run_fixture.sh \
@@ -22,9 +22,11 @@ audio=""
 out_dir=""
 id=""
 threads="4"
+frames=""
 max_new_tokens="64"
 language="Chinese"
 energy_chunking="false"
+dump_module_raw="false"
 measure_memory="false"
 
 while [[ $# -gt 0 ]]; do
@@ -53,6 +55,10 @@ while [[ $# -gt 0 ]]; do
       threads="$2"
       shift 2
       ;;
+    --frames)
+      frames="$2"
+      shift 2
+      ;;
     --max-new-tokens)
       max_new_tokens="$2"
       shift 2
@@ -63,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --energy-chunking)
       energy_chunking="true"
+      shift
+      ;;
+    --dump-module-raw)
+      dump_module_raw="true"
       shift
       ;;
     --measure-memory)
@@ -106,8 +116,16 @@ cmd=(
   --dump-mel-summary "$out_dir/${id}_mel.json"
 )
 
+if [[ -n "$frames" ]]; then
+  cmd+=(--frames "$frames")
+fi
+
 if [[ "$energy_chunking" == "true" ]]; then
   cmd+=(--energy-chunking)
+fi
+
+if [[ "$dump_module_raw" == "true" ]]; then
+  cmd+=(--dump-module-raw "$out_dir/${id}_module_raw")
 fi
 
 if [[ "$measure_memory" == "true" ]]; then
