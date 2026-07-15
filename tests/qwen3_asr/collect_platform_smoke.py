@@ -14,9 +14,59 @@ from typing import Any
 
 def cmd_output(cmd: list[str]) -> str | None:
     try:
-        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
+        return subprocess.check_output(
+            cmd,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stderr=subprocess.DEVNULL,
+        ).strip()
     except Exception:
         return None
+
+
+def proc_cpuinfo_value(label: str) -> str | None:
+    path = Path("/proc/cpuinfo")
+    if not path.is_file():
+        return None
+    prefix = label.lower()
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip().lower() == prefix:
+            return value.strip()
+    return None
+
+
+def platform_metadata() -> dict[str, Any]:
+    system = platform.system()
+    cpu_brand = None
+    cpu_features = None
+    physical_cpu = None
+    logical_cpu = str(os.cpu_count()) if os.cpu_count() is not None else None
+
+    if system == "Darwin":
+        cpu_brand = cmd_output(["sysctl", "-n", "machdep.cpu.brand_string"])
+        cpu_features = cmd_output(["sysctl", "-n", "machdep.cpu.features"])
+        physical_cpu = cmd_output(["sysctl", "-n", "hw.physicalcpu"])
+        logical_cpu = cmd_output(["sysctl", "-n", "hw.logicalcpu"])
+    elif system == "Windows":
+        cpu_brand = os.environ.get("PROCESSOR_IDENTIFIER") or platform.processor() or None
+    elif system == "Linux":
+        cpu_brand = proc_cpuinfo_value("model name") or platform.processor() or None
+        cpu_features = proc_cpuinfo_value("flags") or proc_cpuinfo_value("features")
+
+    return {
+        "system": system,
+        "release": platform.release(),
+        "version": platform.version(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "python": platform.python_version(),
+        "cpu_brand": cpu_brand,
+        "cpu_features": cpu_features,
+        "hw_physicalcpu": physical_cpu,
+        "hw_logicalcpu": logical_cpu,
+    }
 
 
 def load_json(path: str | None) -> Any | None:
@@ -95,24 +145,13 @@ def main() -> int:
     fixture_doc = load_json(args.fixtures)
     report = {
         "schema_version": 1,
-        "platform": {
-            "system": platform.system(),
-            "release": platform.release(),
-            "version": platform.version(),
-            "machine": platform.machine(),
-            "processor": platform.processor(),
-            "python": platform.python_version(),
-            "cpu_brand": cmd_output(["sysctl", "-n", "machdep.cpu.brand_string"]),
-            "cpu_features": cmd_output(["sysctl", "-n", "machdep.cpu.features"]),
-            "hw_physicalcpu": cmd_output(["sysctl", "-n", "hw.physicalcpu"]),
-            "hw_logicalcpu": cmd_output(["sysctl", "-n", "hw.logicalcpu"]),
-        },
+        "platform": platform_metadata(),
         "runtime": {
             "binary": file_info(args.binary),
             "model": file_info(args.model),
             "threads": args.threads,
             "vulkan": False,
-            "note": "macOS CPU-only smoke; not a GPU/Vulkan performance result.",
+            "note": f"{platform.system()} CPU-only smoke; not a GPU/Vulkan performance result.",
         },
         "evaluation": {
             "eval_report": args.eval_report,

@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 project(ncnn_llm LANGUAGES CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -17,6 +19,16 @@ if(NOT TARGET nlohmann_json::nlohmann_json AND NOT NCNN_LLM_NLOHMANN_JSON_INCLUD
     message(FATAL_ERROR
         "nlohmann_json was not found. Install nlohmann_json, or pass "
         "-DNCNN_LLM_NLOHMANN_JSON_INCLUDE_DIR=/path/to/include")
+endif()
+
+if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME qwen3_asr_platform_smoke_py
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/qwen3_asr/test_collect_platform_smoke.py
+        )
+    endif()
 endif()
 
 if(MSVC)
